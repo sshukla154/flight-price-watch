@@ -31,10 +31,20 @@ from typing import Any
 
 import requests
 
-DEPARTURE_ID = "AMS"
-ARRIVAL_ID = "DEL"
-OUTBOUND_DATE = "2027-07-17"
-CURRENCY = "EUR"
+# `or` rather than dict.get's own default arg -- a workflow_dispatch input
+# left blank still SETS the env var (to ""), it doesn't omit it, so the
+# fallback has to treat "" the same as unset.
+DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or "AMS"
+ARRIVAL_ID = os.environ.get("FLIGHT_ARRIVAL_ID") or "DEL"
+OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or "2027-07-17"
+CURRENCY = os.environ.get("FLIGHT_CURRENCY") or "EUR"
+"""All four default to the fixed v1 route/date -- the daily cron never
+sets these env vars, so production behaviour is unchanged. Overridable
+for diagnosing exactly this kind of issue: is a `No flights found` result
+a genuine schedule-publication-horizon gap for the far-future default
+date, or something wrong with the query itself? Point FLIGHT_OUTBOUND_DATE
+at a near-term date (e.g. 60 days out) to tell the two apart without
+touching the committed default."""
 
 SERPAPI_URL = "https://serpapi.com/search"
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"

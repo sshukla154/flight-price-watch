@@ -5,7 +5,12 @@ on:
     # 06:00 UTC daily. GitHub's own docs note scheduled workflows can slip
     # a few minutes under load -- fine for a once-a-day price check.
     - cron: "0 6 * * *"
-  workflow_dispatch: {} # manual "Run workflow" button, for testing on demand
+  workflow_dispatch: # manual "Run workflow" button, for testing on demand
+    inputs:
+      outbound_date:
+        description: "Override date (YYYY-MM-DD) -- blank uses the script's own 2027-07-17 default. Use a near-term date to test whether a 'no flights found' result is a real schedule-publication-horizon gap vs. a broken query."
+        required: false
+        default: ""
 
 jobs:
   check:
@@ -24,4 +29,8 @@ jobs:
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          # Guarded on event_name -- the `inputs` context is only meaningful
+          # for a workflow_dispatch trigger; the daily `schedule` trigger
+          # must never depend on it existing.
+          FLIGHT_OUTBOUND_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.outbound_date || '' }}
         run: python check_price.py
