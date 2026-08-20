@@ -4,10 +4,12 @@ Independent of check_price.py's AMS->DEL check -- separate route,
 separate WhatsApp message, separate workflow/cron. They share
 flightwatch_core.py's SerpApi/CallMeBot logic only.
 
-Candidates (confirmed with the user, not configurable via env for this
-pass -- see README): GOP (Gorakhpur itself) and KBK (Kushinagar, ~55km
-away, newer airport with some international connectivity). VNS/LKO/PAT
-(200km+) deliberately excluded.
+Origin/date/currency/candidates come from routes.toml's [check_gorakhpur]
+table -- edit that file, not this one, to change them.
+
+Candidates (confirmed with the user -- see README): GOP (Gorakhpur
+itself) and KBK (Kushinagar, ~55km away, newer airport with some
+international connectivity). VNS/LKO/PAT (200km+) deliberately excluded.
 
 Cheapest-price-only for now. Factoring in ground travel time/cost from
 each candidate airport to Gorakhpur itself (mirroring flight-agent's own
@@ -27,21 +29,27 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 
-from flightwatch_core import CheckFailed, NoFlightsFoundYet, fetch_cheapest_price, send_whatsapp
-
-DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or "AMS"
-OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or "2027-07-17"
-CURRENCY = os.environ.get("FLIGHT_CURRENCY") or "EUR"
-"""Same override convention as check_price.py's own env vars -- the daily
-cron never sets these, so production behaviour is unchanged; overridable
-for testing with a near-term date. Deliberately no FLIGHT_ARRIVAL_ID
-override here -- the two-candidate list below is this script's whole
-point, not a single overridable destination."""
-
-CANDIDATES = (
-    ("GOP", "Gorakhpur"),
-    ("KBK", "Kushinagar"),
+from flightwatch_core import (
+    CheckFailed,
+    NoFlightsFoundYet,
+    fetch_cheapest_price,
+    load_route_config,
+    send_whatsapp,
 )
+
+_config = load_route_config("check_gorakhpur")
+
+DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or _config["departure_id"]
+OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or _config["outbound_date"]
+CURRENCY = os.environ.get("FLIGHT_CURRENCY") or _config["currency"]
+"""Same override convention as check_price.py's own env vars -- the daily
+cron never sets these, so production behaviour is driven by routes.toml,
+not a Python literal; overridable for testing with a near-term date.
+Deliberately no FLIGHT_ARRIVAL_ID override here -- the candidate list
+below is this script's whole point, not a single overridable
+destination."""
+
+CANDIDATES = tuple((candidate["id"], candidate["label"]) for candidate in _config["candidates"])
 
 
 class Outcome(Enum):
@@ -122,7 +130,12 @@ def main() -> int:
     message = build_comparison(results)
     print(message)
     send_whatsapp(message)
-    return 0
+    # Matches check_price.py's own exit-code discipline: 1 only when a
+    # GENUINE failure occurred (at least one candidate is ERROR), never
+    # for the routine "found a price"/"no data yet" outcomes -- so the
+    # Actions UI shows red exactly when something is actually broken.
+    any_error = any(result.outcome is Outcome.ERROR for result in results)
+    return 1 if any_error else 0
 
 
 if __name__ == "__main__":

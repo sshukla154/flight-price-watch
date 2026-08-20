@@ -68,6 +68,31 @@ does. Test it the same way, with the same near-term-date override:
 gh workflow run gorakhpur-check.yml --repo <your-username>/flight-price-watch -f outbound_date=2026-10-15
 ```
 
+## Configuration
+
+Route/date/currency/candidates live in **`routes.toml`** — the one file
+to edit to change what gets checked. Nothing secret in it (secrets are
+the three GitHub Actions repo secrets below, never a file in this repo).
+The existing `FLIGHT_*` env-var overrides (used for one-off
+`workflow_dispatch` diagnostic runs) still take precedence over
+`routes.toml` when set — env var > `routes.toml`.
+
+## Running tests
+
+```bash
+python -m venv .venv
+.venv/Scripts/activate   # or: source .venv/bin/activate on macOS/Linux
+pip install -r requirements-dev.txt
+pytest
+ruff check .
+```
+
+Tests never call the real SerpApi/CallMeBot APIs — every HTTP call is
+mocked with `requests_mock`, using response shapes verified against the
+real APIs during development. `.github/workflows/ci.yml` runs both on
+every push/PR; it needs none of the three product secrets, since nothing
+it runs ever makes a real network call.
+
 ## One-time setup
 
 ### 1. SerpApi (the data source)

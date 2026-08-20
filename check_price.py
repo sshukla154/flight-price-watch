@@ -1,7 +1,8 @@
 """Daily AMS -> DEL flight-price check, pushed to WhatsApp.
 
-Fixed route/date for this v1 (deliberately -- see README for why):
-AMS -> DEL, 2027-07-17, one-way, economy default.
+Route/date/currency come from routes.toml's [check_price] table (one-way,
+economy default) -- edit that file, not this one, to change them. See
+README for why AMS -> DEL / 2027-07-17 is the committed default.
 
 Data source: SerpApi's Google Flights API (https://serpapi.com/google-flights-api).
 Free tier is 250 searches/month; one run/day here uses ~30/month.
@@ -40,22 +41,31 @@ import os
 import sys
 from typing import Any
 
-from flightwatch_core import CheckFailed, NoFlightsFoundYet, fetch_cheapest_price, send_whatsapp
+from flightwatch_core import (
+    CheckFailed,
+    NoFlightsFoundYet,
+    fetch_cheapest_price,
+    load_route_config,
+    send_whatsapp,
+)
+
+_config = load_route_config("check_price")
 
 # `or` rather than dict.get's own default arg -- a workflow_dispatch input
 # left blank still SETS the env var (to ""), it doesn't omit it, so the
 # fallback has to treat "" the same as unset.
-DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or "AMS"
-ARRIVAL_ID = os.environ.get("FLIGHT_ARRIVAL_ID") or "DEL"
-OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or "2027-07-17"
-CURRENCY = os.environ.get("FLIGHT_CURRENCY") or "EUR"
-"""All four default to the fixed v1 route/date -- the daily cron never
-sets these env vars, so production behaviour is unchanged. Overridable
-for diagnosing exactly this kind of issue: is a `No flights found` result
-a genuine schedule-publication-horizon gap for the far-future default
-date, or something wrong with the query itself? Point FLIGHT_OUTBOUND_DATE
-at a near-term date (e.g. 60 days out) to tell the two apart without
-touching the committed default."""
+DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or _config["departure_id"]
+ARRIVAL_ID = os.environ.get("FLIGHT_ARRIVAL_ID") or _config["arrival_id"]
+OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or _config["outbound_date"]
+CURRENCY = os.environ.get("FLIGHT_CURRENCY") or _config["currency"]
+"""All four default to routes.toml's [check_price] values -- the daily
+cron never sets these env vars, so production behaviour is driven by that
+file, not a Python literal. Still overridable per-run for diagnosing
+exactly this kind of issue: is a `No flights found` result a genuine
+schedule-publication-horizon gap for the far-future date, or something
+wrong with the query itself? Point FLIGHT_OUTBOUND_DATE at a near-term
+date (e.g. 60 days out) to tell the two apart without touching the
+committed config."""
 
 
 def format_message(itinerary: dict[str, Any]) -> str:

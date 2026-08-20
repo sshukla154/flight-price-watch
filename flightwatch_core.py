@@ -15,12 +15,16 @@ has no opinion about how many times a driver calls it per run.
 from __future__ import annotations
 
 import os
+import tomllib
+from pathlib import Path
 from typing import Any
 
 import requests
 
 SERPAPI_URL = "https://serpapi.com/search"
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
+
+_ROUTES_CONFIG_PATH = Path(__file__).resolve().parent / "routes.toml"
 
 
 class CheckFailed(Exception):
@@ -44,6 +48,30 @@ def _env(name: str) -> str:
     if not value:
         raise CheckFailed(f"{name} is not set in the environment")
     return value
+
+
+def load_route_config(section: str) -> dict[str, Any]:
+    """One `[section]` table from `routes.toml` -- the non-secret route/
+    date/candidate values a driver script needs. A config typo (missing
+    file, missing section) raises loudly here rather than surfacing later
+    as a confusing KeyError deep inside a driver script, or worse, a
+    silently-None value.
+
+    Every value here is still overridable by a driver script's own
+    `FLIGHT_*` env var (checked env > `routes.toml`, same precedence as
+    before this file existed) -- this function only supplies the
+    fallback, it never reads the env vars itself.
+    """
+    if not _ROUTES_CONFIG_PATH.is_file():
+        raise CheckFailed(f"routes.toml not found at {_ROUTES_CONFIG_PATH}")
+
+    with _ROUTES_CONFIG_PATH.open("rb") as fh:
+        data = tomllib.load(fh)
+
+    if section not in data:
+        raise CheckFailed(f"routes.toml has no [{section}] section")
+
+    return data[section]
 
 
 def fetch_cheapest_price(

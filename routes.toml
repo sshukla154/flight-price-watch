@@ -1,0 +1,24 @@
+# routes.toml -- the ONE file to edit for route/date changes.
+#
+# Nothing secret in here (secrets are SERPAPI_KEY/CALLMEBOT_PHONE/
+# CALLMEBOT_APIKEY, GitHub Actions repo secrets, never in this file).
+#
+# Each daily cron's FLIGHT_* env-var override (used for one-off
+# workflow_dispatch diagnostic runs, e.g. testing a near-term date) still
+# takes precedence over these values when set -- see check_price.py /
+# check_gorakhpur.py's own comments.
+
+[check_price]
+departure_id = "AMS"
+arrival_id = "DEL"
+outbound_date = "2027-07-17"
+currency = "EUR"
+
+[check_gorakhpur]
+departure_id = "AMS"
+outbound_date = "2027-07-17"
+currency = "EUR"
+candidates = [
+    { id = "GOP", label = "Gorakhpur" },
+    { id = "KBK", label = "Kushinagar" },
+]
