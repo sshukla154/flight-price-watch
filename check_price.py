@@ -18,9 +18,15 @@ committed:
     CALLMEBOT_APIKEY    -- the key CallMeBot's bot sent you after the
                            one-time WhatsApp activation handshake
 
-On ANY failure (SerpApi error, zero flights found, CallMeBot non-200),
-this still tries to send a WhatsApp message saying so -- a silently
-failed daily job is worse than a noisy one.
+On a genuine failure (SerpApi HTTP error, malformed response, CallMeBot
+non-200), this still tries to send a WhatsApp message saying so -- a
+silently failed daily job is worse than a noisy one. The one deliberate
+exception is `NoFlightsFoundYet` (see that class' own docstring): for the
+2027-07-17 default date, a `Success` response with zero itineraries is
+the EXPECTED daily result until Google Flights loads real fare data for
+it (schedule-publication-horizon, see README) -- pinging WhatsApp every
+single day for weeks with "still nothing" would just be noise. That case
+logs to the Action's own run output only.
 """
 
 from __future__ import annotations
@@ -51,9 +57,19 @@ CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
 
 
 class CheckFailed(Exception):
-    """Raised for any expected failure mode -- caught once in main() so the
-    WhatsApp-on-failure path always runs, instead of duplicating a
-    try/except around every possible failure point."""
+    """Raised for a genuine failure -- caught once in main(), which sends a
+    WhatsApp message about it. Duplicating a try/except around every
+    possible failure point would be worse than one shared catch here."""
+
+
+class NoFlightsFoundYet(CheckFailed):
+    """A `Success` SerpApi response with zero itineraries -- for the
+    2027-07-17 default date this is the routine, expected outcome for
+    weeks/months until Google Flights loads real fare data, not a broken
+    query (see module docstring). Deliberately a SEPARATE exception from
+    the base `CheckFailed`, caught separately in main() so it can be
+    logged-only instead of triggering a daily WhatsApp ping that would
+    just say "still nothing" over and over."""
 
 
 def _env(name: str) -> str:
@@ -93,7 +109,9 @@ def fetch_cheapest_price() -> dict[str, Any]:
 
     candidates = [*data.get("best_flights", []), *data.get("other_flights", [])]
     if not candidates:
-        raise CheckFailed(f"No flights found for {DEPARTURE_ID}->{ARRIVAL_ID} on {OUTBOUND_DATE}")
+        raise NoFlightsFoundYet(
+            f"No flights found for {DEPARTURE_ID}->{ARRIVAL_ID} on {OUTBOUND_DATE}"
+        )
 
     return min(candidates, key=lambda itinerary: itinerary["price"])
 
@@ -132,6 +150,11 @@ def main() -> int:
     try:
         itinerary = fetch_cheapest_price()
         message = format_message(itinerary)
+    except NoFlightsFoundYet as exc:
+        # Deliberately silent on WhatsApp -- see that class' own docstring.
+        # Still visible in the Action run's own log if anyone checks.
+        print(f"(no WhatsApp sent, expected outcome) {exc}", file=sys.stderr)
+        return 0
     except CheckFailed as exc:
         failure_message = (
             f"Flight watch {DEPARTURE_ID}->{ARRIVAL_ID} on {OUTBOUND_DATE}: "
