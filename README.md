@@ -11,11 +11,30 @@ see "Possible v2" below).
    or on demand via the Actions tab's "Run workflow" button.
 2. The script queries [SerpApi's Google Flights API](https://serpapi.com/google-flights-api)
    for the cheapest one-way AMS→DEL fare on 2027-07-17.
-3. It sends one WhatsApp message with the result via
-   [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/).
-4. If anything fails (no flights found, an API error), it still sends a
-   WhatsApp message saying so — a silent failure on a daily job is worse
-   than a noisy one.
+3. If a real price was found, it sends one WhatsApp message with the
+   result via [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/).
+4. If Google Flights simply has no fare data for 2027-07-17 yet (see
+   "Why today's run might fail" below), **no WhatsApp message is sent** —
+   only logged in the Action's own run output. That's the expected daily
+   outcome for a while, not a failure, and pinging you every day with
+   "still nothing" would be noise.
+5. Any OTHER failure (a real SerpApi error, a malformed response, a
+   CallMeBot send failure) still sends a WhatsApp message saying so — a
+   silent failure on a daily job is worse than a noisy one, just not for
+   the routine "not published yet" case above.
+
+## Why today's run might fail
+
+2027-07-17 is far enough out that airline schedules/fares may not be
+loaded into Google Flights yet — typically published 330-360 days
+before departure, and that window is right around now for this date.
+The daily job will just start succeeding on its own once real data
+loads; no action needed. If you want to confirm the pipeline itself
+works before then, trigger it manually with a near-term date:
+
+```bash
+gh workflow run daily-check.yml --repo <your-username>/flight-price-watch -f outbound_date=2026-10-15
+```
 
 ## One-time setup
 
