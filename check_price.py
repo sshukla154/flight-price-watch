@@ -21,12 +21,17 @@ committed:
 On a genuine failure (SerpApi HTTP error, malformed response, CallMeBot
 non-200), this still tries to send a WhatsApp message saying so -- a
 silently failed daily job is worse than a noisy one. The one deliberate
-exception is `NoFlightsFoundYet` (see that class' own docstring): for the
-2027-07-17 default date, a `Success` response with zero itineraries is
-the EXPECTED daily result until Google Flights loads real fare data for
-it (schedule-publication-horizon, see README) -- pinging WhatsApp every
-single day for weeks with "still nothing" would just be noise. That case
-logs to the Action's own run output only.
+exception is `NoFlightsFoundYet` (see flightwatch_core's own docstring):
+for the 2027-07-17 default date, a `Success` response with zero
+itineraries is the EXPECTED daily result until Google Flights loads real
+fare data for it (schedule-publication-horizon, see README) -- pinging
+WhatsApp every single day for weeks with "still nothing" would just be
+noise. That case logs to the Action's own run output only.
+
+This is one of two independent daily checks in this repo -- the other is
+check_gorakhpur.py, comparing candidate airports near Gorakhpur. They
+share flightwatch_core.py's SerpApi/CallMeBot logic but are otherwise
+unrelated: this script's route/schedule/secrets are untouched by that one.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ import os
 import sys
 from typing import Any
 
-import requests
+from flightwatch_core import CheckFailed, NoFlightsFoundYet, fetch_cheapest_price, send_whatsapp
 
 # `or` rather than dict.get's own default arg -- a workflow_dispatch input
 # left blank still SETS the env var (to ""), it doesn't omit it, so the
@@ -52,69 +57,6 @@ date, or something wrong with the query itself? Point FLIGHT_OUTBOUND_DATE
 at a near-term date (e.g. 60 days out) to tell the two apart without
 touching the committed default."""
 
-SERPAPI_URL = "https://serpapi.com/search"
-CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
-
-
-class CheckFailed(Exception):
-    """Raised for a genuine failure -- caught once in main(), which sends a
-    WhatsApp message about it. Duplicating a try/except around every
-    possible failure point would be worse than one shared catch here."""
-
-
-class NoFlightsFoundYet(CheckFailed):
-    """A `Success` SerpApi response with zero itineraries -- for the
-    2027-07-17 default date this is the routine, expected outcome for
-    weeks/months until Google Flights loads real fare data, not a broken
-    query (see module docstring). Deliberately a SEPARATE exception from
-    the base `CheckFailed`, caught separately in main() so it can be
-    logged-only instead of triggering a daily WhatsApp ping that would
-    just say "still nothing" over and over."""
-
-
-def _env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise CheckFailed(f"{name} is not set in the environment")
-    return value
-
-
-def fetch_cheapest_price() -> dict[str, Any]:
-    """One SerpApi Google Flights query; returns the cheapest itinerary
-    across BOTH `best_flights` and `other_flights` -- Google Flights' own
-    "best" curation optimizes for a blend of price/duration/stops, not
-    strictly lowest price, so trusting best_flights[0] alone can miss a
-    cheaper option sitting in other_flights.
-    """
-    response = requests.get(
-        SERPAPI_URL,
-        params={
-            "engine": "google_flights",
-            "departure_id": DEPARTURE_ID,
-            "arrival_id": ARRIVAL_ID,
-            "outbound_date": OUTBOUND_DATE,
-            "type": "2",  # one-way
-            "currency": CURRENCY,
-            "hl": "en",
-            "api_key": _env("SERPAPI_KEY"),
-        },
-        timeout=30,
-    )
-    if response.status_code != 200:
-        raise CheckFailed(f"SerpApi returned HTTP {response.status_code}: {response.text[:300]}")
-
-    data = response.json()
-    if data.get("search_metadata", {}).get("status") != "Success":
-        raise CheckFailed(f"SerpApi search did not succeed: {data.get('search_metadata')}")
-
-    candidates = [*data.get("best_flights", []), *data.get("other_flights", [])]
-    if not candidates:
-        raise NoFlightsFoundYet(
-            f"No flights found for {DEPARTURE_ID}->{ARRIVAL_ID} on {OUTBOUND_DATE}"
-        )
-
-    return min(candidates, key=lambda itinerary: itinerary["price"])
-
 
 def format_message(itinerary: dict[str, Any]) -> str:
     flights = itinerary["flights"]
@@ -130,29 +72,18 @@ def format_message(itinerary: dict[str, Any]) -> str:
     )
 
 
-def send_whatsapp(message: str) -> None:
-    response = requests.get(
-        CALLMEBOT_URL,
-        params={
-            "phone": _env("CALLMEBOT_PHONE"),
-            "text": message,
-            "apikey": _env("CALLMEBOT_APIKEY"),
-        },
-        timeout=30,
-    )
-    if response.status_code != 200:
-        raise CheckFailed(
-            f"CallMeBot returned HTTP {response.status_code}: {response.text[:300]}"
-        )
-
-
 def main() -> int:
     try:
-        itinerary = fetch_cheapest_price()
+        itinerary = fetch_cheapest_price(
+            departure_id=DEPARTURE_ID,
+            arrival_id=ARRIVAL_ID,
+            outbound_date=OUTBOUND_DATE,
+            currency=CURRENCY,
+        )
         message = format_message(itinerary)
     except NoFlightsFoundYet as exc:
-        # Deliberately silent on WhatsApp -- see that class' own docstring.
-        # Still visible in the Action run's own log if anyone checks.
+        # Deliberately silent on WhatsApp -- see NoFlightsFoundYet's own
+        # docstring. Still visible in the Action run's own log if checked.
         print(f"(no WhatsApp sent, expected outcome) {exc}", file=sys.stderr)
         return 0
     except CheckFailed as exc:

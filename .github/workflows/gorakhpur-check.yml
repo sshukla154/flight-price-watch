@@ -1,0 +1,37 @@
+name: Daily Gorakhpur-area comparison
+
+on:
+  schedule:
+    # 06:15 UTC daily -- a few minutes offset from daily-check.yml's 06:00
+    # just so the two independent checks don't both hit SerpApi at the
+    # exact same instant. Not load-bearing, just tidy.
+    - cron: "15 6 * * *"
+  workflow_dispatch: # manual "Run workflow" button, for testing on demand
+    inputs:
+      outbound_date:
+        description: "Override date (YYYY-MM-DD) -- blank uses the script's own 2027-07-17 default. Use a near-term date to test whether SerpApi/Google Flights has any coverage at all for GOP/KBK, independent of the schedule-publication-horizon question daily-check.yml's own override already answers for DEL."
+        required: false
+        default: ""
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: Compare Gorakhpur-area airports and notify WhatsApp
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          # Same event_name guard as daily-check.yml -- the `inputs`
+          # context is only meaningful for workflow_dispatch; the daily
+          # `schedule` trigger must never depend on it existing.
+          FLIGHT_OUTBOUND_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.outbound_date || '' }}
+        run: python check_gorakhpur.py
