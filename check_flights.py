@@ -60,9 +60,20 @@ _ONE_STOP = 1
 
 
 @dataclass(frozen=True)
+class CategoryRow:
+    airport: str
+    price: str
+    airline: str
+    departure: str
+    arrival: str
+    total: str
+    transit: str | None
+
+
+@dataclass(frozen=True)
 class CandidateOutcome:
-    direct_line: str | None
-    one_stop_line: str | None
+    direct_row: CategoryRow | None
+    one_stop_row: CategoryRow | None
     error_line: str | None
 
 
@@ -96,7 +107,7 @@ def _time_of_day(departure_timestamp: str, timestamp: str) -> str:
     return f"{time_of_day}+1" if date != departure_date else time_of_day
 
 
-def _format_category_line(label: str, arrival_id: str, itinerary: dict[str, Any]) -> str:
+def _row_from_itinerary(arrival_id: str, itinerary: dict[str, Any]) -> CategoryRow:
     flights = itinerary["flights"]
     airlines = ", ".join(dict.fromkeys(leg["airline"] for leg in flights))
     departure_timestamp = flights[0]["departure_airport"]["time"]
@@ -105,18 +116,47 @@ def _format_category_line(label: str, arrival_id: str, itinerary: dict[str, Any]
     arrival_time = _time_of_day(departure_timestamp, arrival_timestamp)
     hours, minutes = divmod(itinerary["total_duration"], 60)
 
-    transit_part = ""
+    transit: str | None = None
     layovers = itinerary.get("layovers") or []
     if layovers:
         layover_minutes = sum(layover["duration"] for layover in layovers)
         transit_hours, transit_minutes = divmod(layover_minutes, 60)
-        transit_part = f" -- transit {transit_hours}h{transit_minutes:02d}m"
+        transit = f"{transit_hours}h{transit_minutes:02d}m"
 
-    return (
-        f"{label} ({arrival_id}): {CURRENCY} {itinerary['price']} -- {airlines} -- "
-        f"dep {departure_time} -> arr {arrival_time}{transit_part} -- "
-        f"{hours}h{minutes:02d}m total"
+    return CategoryRow(
+        airport=arrival_id,
+        price=str(itinerary["price"]),
+        airline=airlines,
+        departure=departure_time,
+        arrival=arrival_time,
+        total=f"{hours}h{minutes:02d}m",
+        transit=transit,
     )
+
+
+def _format_table(headers: list[str], rows: list[list[str]]) -> str:
+    """Aligned monospace table -- the only way WhatsApp shows something
+    table-like, since it has no real markdown table rendering. Column
+    widths are computed from the actual content (header or any cell,
+    whichever is longest), never hardcoded, so this stays correct
+    however long an airline name or a total-duration string turns out
+    to be. Price (column 1) is right-aligned; everything else is left-
+    aligned. Caller wraps the result in a ``` fence."""
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i])
+        for i in range(len(headers))
+    ]
+
+    def _format_row(cells: list[str]) -> str:
+        parts = [
+            cell.rjust(widths[i]) if i == 1 else cell.ljust(widths[i])
+            for i, cell in enumerate(cells)
+        ]
+        return "  ".join(parts).rstrip()
+
+    lines = [_format_row(headers), _format_row(["-" * w for w in widths])]
+    lines.extend(_format_row(row) for row in rows)
+    return "\n".join(lines)
 
 
 def _check_one(arrival_id: str, label: str) -> CandidateOutcome:
@@ -132,38 +172,48 @@ def _check_one(arrival_id: str, label: str) -> CandidateOutcome:
             currency=CURRENCY,
         )
     except NoFlightsFoundYet:
-        return CandidateOutcome(direct_line=None, one_stop_line=None, error_line=None)
+        return CandidateOutcome(direct_row=None, one_stop_row=None, error_line=None)
     except CheckFailed as exc:
         return CandidateOutcome(
-            direct_line=None,
-            one_stop_line=None,
+            direct_row=None,
+            one_stop_row=None,
             error_line=f"{label} ({arrival_id}): error -- {exc}",
         )
 
     best = _best_by_stop_category(itineraries)
-    direct_line = (
-        _format_category_line(label, arrival_id, best[_DIRECT]) if _DIRECT in best else None
-    )
-    one_stop_line = (
-        _format_category_line(label, arrival_id, best[_ONE_STOP]) if _ONE_STOP in best else None
-    )
+    direct_row = _row_from_itinerary(arrival_id, best[_DIRECT]) if _DIRECT in best else None
+    one_stop_row = _row_from_itinerary(arrival_id, best[_ONE_STOP]) if _ONE_STOP in best else None
     # best may legitimately be empty (every itinerary SerpApi returned had
     # 2+ stops) -- that's the same "nothing useful to report" situation as
     # NoFlightsFoundYet from this script's own point of view, handled
-    # identically by leaving both lines None.
-    return CandidateOutcome(direct_line=direct_line, one_stop_line=one_stop_line, error_line=None)
+    # identically by leaving both rows None.
+    return CandidateOutcome(direct_row=direct_row, one_stop_row=one_stop_row, error_line=None)
 
 
 def _build_message(outcomes: list[CandidateOutcome]) -> str:
-    direct_lines = [o.direct_line for o in outcomes if o.direct_line is not None]
-    one_stop_lines = [o.one_stop_line for o in outcomes if o.one_stop_line is not None]
+    direct_rows = [o.direct_row for o in outcomes if o.direct_row is not None]
+    one_stop_rows = [o.one_stop_row for o in outcomes if o.one_stop_row is not None]
     error_lines = [o.error_line for o in outcomes if o.error_line is not None]
 
-    sections = [f"Flight watch from {DEPARTURE_ID} on {OUTBOUND_DATE}"]
-    if direct_lines:
-        sections.append("\nDIRECT\n" + "\n".join(direct_lines))
-    if one_stop_lines:
-        sections.append("\n1 STOP (max)\n" + "\n".join(one_stop_lines))
+    sections = [f"Flight watch from {DEPARTURE_ID} on {OUTBOUND_DATE} ({CURRENCY})"]
+    if direct_rows:
+        table = _format_table(
+            ["Airport", "Price", "Airline", "Dep", "Arr", "Total"],
+            [
+                [r.airport, r.price, r.airline, r.departure, r.arrival, r.total]
+                for r in direct_rows
+            ],
+        )
+        sections.append(f"\nDIRECT\n```\n{table}\n```")
+    if one_stop_rows:
+        table = _format_table(
+            ["Airport", "Price", "Airline", "Dep", "Arr", "Transit", "Total"],
+            [
+                [r.airport, r.price, r.airline, r.departure, r.arrival, r.transit or "", r.total]
+                for r in one_stop_rows
+            ],
+        )
+        sections.append(f"\n1 STOP (max)\n```\n{table}\n```")
     if error_lines:
         sections.append("\nERRORS\n" + "\n".join(error_lines))
     return "\n".join(sections)
@@ -173,7 +223,7 @@ def main() -> int:
     outcomes = [_check_one(arrival_id, label) for arrival_id, label in CANDIDATES]
 
     has_any_finding = any(
-        o.direct_line is not None or o.one_stop_line is not None or o.error_line is not None
+        o.direct_row is not None or o.one_stop_row is not None or o.error_line is not None
         for o in outcomes
     )
     if not has_any_finding:

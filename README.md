@@ -15,20 +15,32 @@ fare to several candidate Indian destination airports, on a fixed date.
    the cheapest **1-stop (max)** option — one search per candidate
    either way, never two, to stay inside the monthly search budget.
 3. It builds **one combined WhatsApp message** with two sections —
-   `DIRECT` and `1 STOP (max)` — each listing every candidate that has
-   an option in that category, cheapest first, with departure/arrival
-   local time, transit (layover) time, and total duration. A candidate
-   with nothing in a category is simply omitted from that section, e.g.:
+   `DIRECT` and `1 STOP (max)` — each a monospace table listing every
+   candidate that has an option in that category (cheapest-per-airport,
+   not sorted by price across airports), with airline, departure/
+   arrival local time, transit (layover) time, and total duration.
+   WhatsApp has no real markdown table support (`|` pipes just show up
+   literally), so each table is a `` ``` ``-fenced, column-aligned block
+   — the only way to get things lining up on a phone. A candidate with
+   nothing in a category is simply omitted from that section, e.g.:
 
-   ```
-   Flight watch from AMS on 2027-07-17
+   ````
+   Flight watch from AMS on 2027-07-17 (EUR)
 
    DIRECT
-   Delhi (DEL): EUR 480 -- KLM -- dep 09:15 -> arr 21:30 -- 12h15m total
+   ```
+   Airport  Price  Airline  Dep    Arr      Total
+   -------  -----  -------  -----  -------  ------
+   DEL         480  KLM      09:15  21:30    12h15m
+   ```
 
    1 STOP (max)
-   Varanasi (VNS): EUR 356 -- Oman Air -- dep 10:15 -> arr 06:30+1 -- transit 1h30m -- 15h15m total
    ```
+   Airport  Price  Airline   Dep    Arr      Transit  Total
+   -------  -----  --------  -----  -------  -------  ------
+   VNS         356  Oman Air  10:15  06:30+1  1h30m    15h15m
+   ```
+   ````
 
    Sent via [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/)
    — but only if at least one candidate has a real finding (in either
@@ -179,6 +191,24 @@ python check_flights.py
 
 ## Possible v2 (not built, deliberately)
 
+- **Multi-passenger pricing (2 adults + 1 child, age 7)** — SerpApi's
+  Google Flights API supports `adults` / `children` /
+  `infants_in_seat` / `infants_on_lap` params (verified live against
+  SerpApi's own docs, 2026-08-21); headcount only, no age field exists,
+  so a 7-year-old is just `children=1`. Today's queries pass none of
+  these (SerpApi defaults to `adults=1`) — every price shown right now
+  is a single-adult fare, not the real 3-person fare the user actually
+  needs. Not yet implemented: `fetch_all_itineraries` and `routes.toml`
+  would both need new fields.
+- **Multiple dates / date range** — SerpApi's Google Flights API has
+  no calendar/cheapest-dates feature (verified live, 2026-08-21):
+  `outbound_date` accepts exactly one fixed date per call, always. A
+  range means one SerpApi call per date, multiplied by however many
+  candidates are active — budget math matters here (today's 4
+  candidates × 1 date ≈ 120/month; a ±3-day range would jump to
+  ~840/month, well past the 250 free cap) — needs either fewer
+  candidates, a lower check frequency, or scoping the range to one
+  candidate at a time.
 - A committed price-history log (trends visible beyond WhatsApp chat
   history).
 - Rotating through more origins (`flight-agent`'s own 10-airport list
