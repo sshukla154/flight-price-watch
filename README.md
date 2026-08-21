@@ -10,21 +10,38 @@ fare to several candidate Indian destination airports, on a fixed date.
    Actions tab's "Run workflow" button.
 2. For each candidate airport in `routes.toml`'s `[check_flights]`
    section, it queries [SerpApi's Google Flights API](https://serpapi.com/google-flights-api)
-   for the cheapest one-way fare from AMS on the configured date.
-3. It builds **one combined WhatsApp message** comparing every
-   candidate, cheapest first, and sends it via
-   [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/)
-   — but only if at least one candidate has a real price or a real
-   error. If every single candidate has no fare data yet, **no WhatsApp
-   message is sent** — only logged in the Action's own run output.
-   That's the expected daily outcome for a while (see "Why today's run
-   might fail" below), not a failure, and pinging you every day with
-   "still nothing" would be noise.
+   **once** for every one-way fare from AMS on the configured date, then
+   locally splits the results into the cheapest **direct** option and
+   the cheapest **1-stop (max)** option — one search per candidate
+   either way, never two, to stay inside the monthly search budget.
+3. It builds **one combined WhatsApp message** with two sections —
+   `DIRECT` and `1 STOP (max)` — each listing every candidate that has
+   an option in that category, cheapest first, with departure/arrival
+   local time, transit (layover) time, and total duration. A candidate
+   with nothing in a category is simply omitted from that section, e.g.:
+
+   ```
+   Flight watch from AMS on 2027-07-17
+
+   DIRECT
+   Delhi (DEL): EUR 480 -- KLM -- dep 09:15 -> arr 21:30 -- 12h15m total
+
+   1 STOP (max)
+   Varanasi (VNS): EUR 356 -- Oman Air -- dep 10:15 -> arr 06:30+1 -- transit 1h30m -- 15h15m total
+   ```
+
+   Sent via [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/)
+   — but only if at least one candidate has a real finding (in either
+   category) or a real error. If every single candidate has nothing to
+   report, **no WhatsApp message is sent** — only logged in the Action's
+   own run output. That's the expected daily outcome for a while (see
+   "Why today's run might fail" below), not a failure, and pinging you
+   every day with "still nothing" would be noise.
 4. A genuine error on even one candidate (a real SerpApi error, a
    malformed response, a CallMeBot send failure) still sends the
-   combined message and makes the whole run exit 1 — a silent failure
-   on a daily job is worse than a noisy one, just not for the routine
-   "not published yet" case above.
+   message (in an `ERRORS` section) and makes the whole run exit 1 — a
+   silent failure on a daily job is worse than a noisy one, just not for
+   the routine "not published yet" case above.
 
 **Budget**: 4 candidates × 1 search/day ≈ 120 searches/month, well
 inside SerpApi's free-tier 250/month cap (~130/month spare).

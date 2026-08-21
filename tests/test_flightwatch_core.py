@@ -74,6 +74,41 @@ _SUCCESS_RESPONSE_EMPTY = {
 }
 
 
+class TestFetchAllItineraries:
+    def test_returns_every_itinerary_from_both_lists_unfiltered(self) -> None:
+        with requests_mock.Mocker() as mock:
+            mock.get(core.SERPAPI_URL, json=_SUCCESS_RESPONSE_TWO_OFFERS)
+            itineraries = core.fetch_all_itineraries(
+                departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
+            )
+        # Both the best_flights entry (600) and the other_flights entry
+        # (450) come back, in that order -- nothing picked or dropped.
+        assert [itinerary["price"] for itinerary in itineraries] == [600, 450]
+
+    def test_empty_result_raises_no_flights_found_yet(self) -> None:
+        with requests_mock.Mocker() as mock:
+            mock.get(core.SERPAPI_URL, json=_SUCCESS_RESPONSE_EMPTY)
+            with pytest.raises(core.NoFlightsFoundYet):
+                core.fetch_all_itineraries(
+                    departure_id="AMS",
+                    arrival_id="DEL",
+                    outbound_date="2027-07-17",
+                    currency="EUR",
+                )
+
+    def test_non_200_raises_check_failed(self) -> None:
+        with requests_mock.Mocker() as mock:
+            mock.get(core.SERPAPI_URL, status_code=500, text="internal error")
+            with pytest.raises(core.CheckFailed) as exc_info:
+                core.fetch_all_itineraries(
+                    departure_id="AMS",
+                    arrival_id="DEL",
+                    outbound_date="2027-07-17",
+                    currency="EUR",
+                )
+        assert not isinstance(exc_info.value, core.NoFlightsFoundYet)
+
+
 class TestFetchCheapestPrice:
     def test_picks_the_cheapest_across_best_and_other_flights(self) -> None:
         with requests_mock.Mocker() as mock:

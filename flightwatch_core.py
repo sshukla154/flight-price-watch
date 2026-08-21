@@ -74,14 +74,21 @@ def load_route_config(section: str) -> dict[str, Any]:
     return data[section]
 
 
-def fetch_cheapest_price(
+def fetch_all_itineraries(
     *, departure_id: str, arrival_id: str, outbound_date: str, currency: str
-) -> dict[str, Any]:
-    """One SerpApi Google Flights query; returns the cheapest itinerary
-    across BOTH `best_flights` and `other_flights` -- Google Flights' own
-    "best" curation optimizes for a blend of price/duration/stops, not
-    strictly lowest price, so trusting best_flights[0] alone can miss a
-    cheaper option sitting in other_flights.
+) -> list[dict[str, Any]]:
+    """One SerpApi Google Flights query; returns EVERY itinerary from
+    BOTH `best_flights` and `other_flights` -- Google Flights' own "best"
+    curation optimizes for a blend of price/duration/stops, not strictly
+    lowest price, so trusting `best_flights` alone can miss a cheaper (or
+    direct, or otherwise notable) option sitting in `other_flights`.
+
+    Returns the full, unsorted, un-filtered list so a caller can bucket
+    by stop count, pick a cheapest-per-category, or whatever else it
+    needs -- this function's only job is "ask SerpApi once, hand back
+    everything it said, on this SAME query" so no caller ever needs a
+    second SerpApi call (and therefore a second unit of monthly quota)
+    just to see the itineraries a first call already fetched.
     """
     response = requests.get(
         SERPAPI_URL,
@@ -104,13 +111,29 @@ def fetch_cheapest_price(
     if data.get("search_metadata", {}).get("status") != "Success":
         raise CheckFailed(f"SerpApi search did not succeed: {data.get('search_metadata')}")
 
-    candidates = [*data.get("best_flights", []), *data.get("other_flights", [])]
-    if not candidates:
+    itineraries = [*data.get("best_flights", []), *data.get("other_flights", [])]
+    if not itineraries:
         raise NoFlightsFoundYet(
             f"No flights found for {departure_id}->{arrival_id} on {outbound_date}"
         )
 
-    return min(candidates, key=lambda itinerary: itinerary["price"])
+    return itineraries
+
+
+def fetch_cheapest_price(
+    *, departure_id: str, arrival_id: str, outbound_date: str, currency: str
+) -> dict[str, Any]:
+    """The single cheapest itinerary, regardless of stop count -- a thin
+    wrapper over `fetch_all_itineraries` kept for callers (and existing
+    tests) that only care about "the cheapest option," not the full list.
+    """
+    itineraries = fetch_all_itineraries(
+        departure_id=departure_id,
+        arrival_id=arrival_id,
+        outbound_date=outbound_date,
+        currency=currency,
+    )
+    return min(itineraries, key=lambda itinerary: itinerary["price"])
 
 
 def send_whatsapp(message: str) -> None:

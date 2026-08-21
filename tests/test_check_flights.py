@@ -1,8 +1,9 @@
-"""Tests for check_flights.py -- per-candidate outcome mapping,
-cheapest-first comparison ordering, and the one genuinely non-obvious
-rule in this repo: stay silent on WhatsApp only when EVERY candidate has
-no data yet, never when even one has a real price or a real error (and
-a real error must still exit 1, even if other candidates are fine).
+"""Tests for check_flights.py -- stop-category bucketing, per-category
+line formatting (including the departure/arrival time-of-day "+1"
+day-rollover suffix), and the generalized silence rule: stay silent on
+WhatsApp only when there is truly nothing to report for ANY candidate in
+EITHER category, never when even one candidate has a real finding or a
+real error (and a real error must still exit 1).
 
 Candidates come from routes.toml's [check_flights] section at import
 time (DEL, VNS, LKO, DXN as of this writing) -- these tests exercise the
@@ -18,83 +19,174 @@ import pytest
 import check_flights as cf
 import flightwatch_core as core
 
+_DIRECT_ITINERARY = {
+    "price": 480,
+    "flights": [
+        {
+            "airline": "KLM",
+            "departure_airport": {"time": "2027-07-17 09:15"},
+            "arrival_airport": {"time": "2027-07-17 21:30"},
+        }
+    ],
+    "total_duration": 735,
+}
+
+_ONE_STOP_ITINERARY = {
+    "price": 356,
+    "flights": [
+        {
+            "airline": "Oman Air",
+            "departure_airport": {"time": "2027-07-17 10:15"},
+            "arrival_airport": {"time": "2027-07-17 15:00"},
+        },
+        {
+            "airline": "Oman Air",
+            "departure_airport": {"time": "2027-07-17 16:30"},
+            "arrival_airport": {"time": "2027-07-18 06:30"},
+        },
+    ],
+    "layovers": [{"duration": 90, "name": "Muscat", "id": "MCT"}],
+    "total_duration": 915,
+}
+
+_TWO_STOP_ITINERARY = {
+    "price": 200,  # deliberately cheapest of all -- must still be ignored
+    "flights": [{"airline": "X"}, {"airline": "X"}, {"airline": "X"}],
+    "total_duration": 1000,
+}
+
+
+class TestBestByStopCategory:
+    def test_picks_cheapest_direct_and_cheapest_one_stop_independently(self) -> None:
+        pricier_direct = {**_DIRECT_ITINERARY, "price": 900}
+        itineraries = [pricier_direct, _DIRECT_ITINERARY, _ONE_STOP_ITINERARY]
+
+        best = cf._best_by_stop_category(itineraries)
+
+        assert best[cf._DIRECT]["price"] == 480
+        assert best[cf._ONE_STOP]["price"] == 356
+
+    def test_ignores_two_or_more_stops_entirely(self) -> None:
+        best = cf._best_by_stop_category([_TWO_STOP_ITINERARY, _ONE_STOP_ITINERARY])
+
+        assert cf._DIRECT not in best
+        assert best[cf._ONE_STOP]["price"] == 356  # not the cheaper 200 two-stop one
+
+    def test_category_absent_when_no_itinerary_qualifies(self) -> None:
+        best = cf._best_by_stop_category([_ONE_STOP_ITINERARY])
+
+        assert cf._DIRECT not in best
+        assert cf._ONE_STOP in best
+
+
+class TestTimeOfDay:
+    def test_same_day_returns_bare_time(self) -> None:
+        assert cf._time_of_day("2027-07-17 10:15", "2027-07-17 15:00") == "15:00"
+
+    def test_next_day_gets_plus_one_suffix(self) -> None:
+        assert cf._time_of_day("2027-07-17 10:15", "2027-07-18 06:30") == "06:30+1"
+
+
+class TestFormatCategoryLine:
+    def test_direct_line_has_no_transit_segment(self) -> None:
+        line = cf._format_category_line("Delhi", "DEL", _DIRECT_ITINERARY)
+
+        assert line == (
+            "Delhi (DEL): EUR 480 -- KLM -- dep 09:15 -> arr 21:30 -- 12h15m total"
+        )
+        assert "transit" not in line
+
+    def test_one_stop_line_includes_transit_and_day_rollover(self) -> None:
+        line = cf._format_category_line("Varanasi", "VNS", _ONE_STOP_ITINERARY)
+
+        assert line == (
+            "Varanasi (VNS): EUR 356 -- Oman Air -- dep 10:15 -> arr 06:30+1 -- "
+            "transit 1h30m -- 15h15m total"
+        )
+
+    def test_deduplicates_repeated_airline_across_segments(self) -> None:
+        line = cf._format_category_line("Varanasi", "VNS", _ONE_STOP_ITINERARY)
+        assert line.count("Oman Air") == 1
+
 
 class TestCheckOne:
-    def test_price_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        itinerary = {
-            "price": 407,
-            "flights": [{"airline": "IndiGo"}, {"airline": "IndiGo"}],
-            "total_duration": 990,
-        }
-        monkeypatch.setattr(cf, "fetch_cheapest_price", lambda **_: itinerary)
+    def test_price_found_in_both_categories(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            cf, "fetch_all_itineraries", lambda **_: [_DIRECT_ITINERARY, _ONE_STOP_ITINERARY]
+        )
 
-        result = cf._check_one("DEL", "Delhi")
+        outcome = cf._check_one("DEL", "Delhi")
 
-        assert result.outcome is cf.Outcome.PRICE_FOUND
-        assert result.price == 407
-        assert "Delhi (DEL)" in result.line
-        assert "EUR 407" in result.line
+        assert outcome.direct_line is not None and "EUR 480" in outcome.direct_line
+        assert outcome.one_stop_line is not None and "EUR 356" in outcome.one_stop_line
+        assert outcome.error_line is None
 
-    def test_no_flights_found_yet(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_flights_found_yet_gives_all_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _raise(**_: object) -> None:
             raise core.NoFlightsFoundYet("No flights found for AMS->DXN on 2027-07-17")
 
-        monkeypatch.setattr(cf, "fetch_cheapest_price", _raise)
+        monkeypatch.setattr(cf, "fetch_all_itineraries", _raise)
 
-        result = cf._check_one("DXN", "Noida (Jewar)")
+        outcome = cf._check_one("DXN", "Noida (Jewar)")
 
-        assert result.outcome is cf.Outcome.NO_DATA_YET
-        assert result.price is None
-        assert "Noida (Jewar) (DXN): no data yet" == result.line
+        assert outcome == cf.CandidateOutcome(direct_line=None, one_stop_line=None, error_line=None)
+
+    def test_only_two_stop_options_gives_all_none_same_as_no_data(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cf, "fetch_all_itineraries", lambda **_: [_TWO_STOP_ITINERARY])
+
+        outcome = cf._check_one("DEL", "Delhi")
+
+        assert outcome.direct_line is None
+        assert outcome.one_stop_line is None
+        assert outcome.error_line is None
 
     def test_genuine_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _raise(**_: object) -> None:
             raise core.CheckFailed("SerpApi returned HTTP 500: boom")
 
-        monkeypatch.setattr(cf, "fetch_cheapest_price", _raise)
+        monkeypatch.setattr(cf, "fetch_all_itineraries", _raise)
 
-        result = cf._check_one("VNS", "Varanasi")
+        outcome = cf._check_one("VNS", "Varanasi")
 
-        assert result.outcome is cf.Outcome.ERROR
-        assert result.price is None
-        assert "error -- " in result.line
-        assert "boom" in result.line
+        assert outcome.direct_line is None
+        assert outcome.one_stop_line is None
+        assert outcome.error_line is not None and "boom" in outcome.error_line
 
 
-class TestBuildComparison:
-    def test_cheapest_sorts_first(self) -> None:
-        results = [
-            cf.CandidateResult(
-                line="Delhi (DEL): EUR 600 ...", price=600, outcome=cf.Outcome.PRICE_FOUND
+class TestBuildMessage:
+    def test_sections_omitted_when_empty(self) -> None:
+        outcomes = [
+            cf.CandidateOutcome(
+                direct_line="Delhi (DEL): ...", one_stop_line=None, error_line=None
+            )
+        ]
+
+        message = cf._build_message(outcomes)
+
+        assert "DIRECT" in message
+        assert "1 STOP" not in message
+        assert "ERRORS" not in message
+
+    def test_all_three_sections_appear_when_populated(self) -> None:
+        outcomes = [
+            cf.CandidateOutcome(
+                direct_line="Delhi (DEL): direct-line", one_stop_line=None, error_line=None
             ),
-            cf.CandidateResult(
-                line="Varanasi (VNS): EUR 450 ...", price=450, outcome=cf.Outcome.PRICE_FOUND
+            cf.CandidateOutcome(
+                direct_line=None, one_stop_line="Varanasi (VNS): one-stop-line", error_line=None
+            ),
+            cf.CandidateOutcome(
+                direct_line=None, one_stop_line=None, error_line="Lucknow (LKO): error -- boom"
             ),
         ]
 
-        message = cf.build_comparison(results)
+        message = cf._build_message(outcomes)
 
-        # VNS's cheaper 450 line must appear before DEL's 600 line.
-        assert message.index("EUR 450") < message.index("EUR 600")
-
-    def test_no_price_results_sort_last(self) -> None:
-        results = [
-            cf.CandidateResult(
-                line="Noida (Jewar) (DXN): no data yet", price=None, outcome=cf.Outcome.NO_DATA_YET
-            ),
-            cf.CandidateResult(
-                line="Delhi (DEL): EUR 407 ...", price=407, outcome=cf.Outcome.PRICE_FOUND
-            ),
-        ]
-
-        message = cf.build_comparison(results)
-
-        assert message.index("EUR 407") < message.index("no data yet")
-
-    def test_header_names_origin_and_date(self) -> None:
-        message = cf.build_comparison([])
-        expected_header = f"Flight watch from {cf.DEPARTURE_ID} on {cf.OUTBOUND_DATE}"
-        assert message.startswith(expected_header)
+        assert "DIRECT" in message and "direct-line" in message
+        assert "1 STOP" in message and "one-stop-line" in message
+        assert "ERRORS" in message and "error -- boom" in message
 
 
 class TestMainSilenceRule:
@@ -102,7 +194,7 @@ class TestMainSilenceRule:
         def _raise(**_: object) -> None:
             raise core.NoFlightsFoundYet("no data yet")
 
-        monkeypatch.setattr(cf, "fetch_cheapest_price", _raise)
+        monkeypatch.setattr(cf, "fetch_all_itineraries", _raise)
         sent: list[str] = []
         monkeypatch.setattr(cf, "send_whatsapp", sent.append)
 
@@ -111,21 +203,17 @@ class TestMainSilenceRule:
         assert exit_code == 0
         assert sent == []
 
-    def test_one_candidate_priced_still_notifies(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        call_count = {"n": 0}
+    def test_one_candidate_direct_only_still_notifies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         priced_id = cf.CANDIDATES[0][0]
 
-        def _fake_fetch(*, arrival_id: str, **_: object) -> dict[str, object]:
-            call_count["n"] += 1
+        def _fake_fetch(*, arrival_id: str, **_: object) -> list[dict[str, object]]:
             if arrival_id == priced_id:
-                return {
-                    "price": 407,
-                    "flights": [{"airline": "IndiGo"}],
-                    "total_duration": 990,
-                }
+                return [_DIRECT_ITINERARY]
             raise core.NoFlightsFoundYet("no data yet")
 
-        monkeypatch.setattr(cf, "fetch_cheapest_price", _fake_fetch)
+        monkeypatch.setattr(cf, "fetch_all_itineraries", _fake_fetch)
         sent: list[str] = []
         monkeypatch.setattr(cf, "send_whatsapp", sent.append)
 
@@ -133,24 +221,24 @@ class TestMainSilenceRule:
 
         assert exit_code == 0
         assert len(sent) == 1
-        assert "EUR 407" in sent[0]
-        assert "no data yet" in sent[0]  # every other candidate's outcome still visible
-        assert call_count["n"] == len(cf.CANDIDATES)  # every candidate was actually queried
+        assert "EUR 480" in sent[0]
+        assert "DIRECT" in sent[0]
+        assert "1 STOP" not in sent[0]  # nobody else had a one-stop result either
 
     def test_one_candidate_erroring_still_notifies_and_exits_one(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The exact case the module docstring warns about: an ERROR
+        """The exact case the module docstring warns about: an error
         outcome must never be masked by another candidate's routine
-        NO_DATA_YET outcome, and must make the whole run exit 1."""
+        no-data outcome, and must make the whole run exit 1."""
         erroring_id = cf.CANDIDATES[0][0]
 
-        def _fake_fetch(*, arrival_id: str, **_: object) -> dict[str, object]:
+        def _fake_fetch(*, arrival_id: str, **_: object) -> list[dict[str, object]]:
             if arrival_id == erroring_id:
                 raise core.CheckFailed("SerpApi returned HTTP 500: boom")
             raise core.NoFlightsFoundYet("no data yet")
 
-        monkeypatch.setattr(cf, "fetch_cheapest_price", _fake_fetch)
+        monkeypatch.setattr(cf, "fetch_all_itineraries", _fake_fetch)
         sent: list[str] = []
         monkeypatch.setattr(cf, "send_whatsapp", sent.append)
 
@@ -167,14 +255,10 @@ class TestMainSilenceRule:
         candidate in ONE message, not just the first/last one -- real at
         the actual 4-candidate scale, not just 2."""
 
-        def _fake_fetch(*, arrival_id: str, **_: object) -> dict[str, object]:
-            return {
-                "price": float(len(arrival_id) * 100),  # any distinct, deterministic value
-                "flights": [{"airline": "Test Air"}],
-                "total_duration": 600,
-            }
+        def _fake_fetch(*, arrival_id: str, **_: object) -> list[dict[str, object]]:
+            return [{**_DIRECT_ITINERARY, "price": float(len(arrival_id) * 100)}]
 
-        monkeypatch.setattr(cf, "fetch_cheapest_price", _fake_fetch)
+        monkeypatch.setattr(cf, "fetch_all_itineraries", _fake_fetch)
         sent: list[str] = []
         monkeypatch.setattr(cf, "send_whatsapp", sent.append)
 
