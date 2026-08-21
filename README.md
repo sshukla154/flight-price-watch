@@ -49,7 +49,16 @@ inside SerpApi's free-tier 250/month cap (~130/month spare).
 ## Configuration — `routes.toml`
 
 The **one file to edit** to change the route, date, or candidate
-airports — no Python edit needed:
+airports — no Python edit needed. Quick reference:
+
+| Want to change | Field | Example |
+|---|---|---|
+| From location (departure airport) | `departure_id` | `"AMS"` |
+| To location(s) (destination airports compared) | `candidates` | add/remove `{ id = "...", label = "..." }` entries |
+| Date of travel | `outbound_date` | `"2027-07-17"` |
+
+Edit the value(s), commit, push — the next scheduled run (or a manual
+`workflow_dispatch`) picks it up automatically.
 
 ```toml
 [check_flights]
