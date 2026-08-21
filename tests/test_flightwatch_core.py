@@ -24,21 +24,16 @@ def _serpapi_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestLoadRouteConfig:
-    def test_reads_the_real_committed_check_price_section(self) -> None:
-        config = core.load_route_config("check_price")
-        assert config == {
-            "departure_id": "AMS",
-            "arrival_id": "DEL",
-            "outbound_date": "2027-07-17",
-            "currency": "EUR",
-        }
-
-    def test_reads_the_real_committed_check_gorakhpur_section(self) -> None:
-        config = core.load_route_config("check_gorakhpur")
+    def test_reads_the_real_committed_check_flights_section(self) -> None:
+        config = core.load_route_config("check_flights")
         assert config["departure_id"] == "AMS"
+        assert config["outbound_date"] == "2027-07-17"
+        assert config["currency"] == "EUR"
         assert config["candidates"] == [
-            {"id": "GOP", "label": "Gorakhpur"},
-            {"id": "KBK", "label": "Kushinagar"},
+            {"id": "DEL", "label": "Delhi"},
+            {"id": "VNS", "label": "Varanasi"},
+            {"id": "LKO", "label": "Lucknow"},
+            {"id": "DXN", "label": "Noida (Jewar)"},
         ]
 
     def test_missing_section_raises_check_failed(self) -> None:
@@ -51,7 +46,7 @@ class TestLoadRouteConfig:
         missing_path = tmp_path / "does-not-exist.toml"  # type: ignore[operator]
         monkeypatch.setattr(core, "_ROUTES_CONFIG_PATH", missing_path)
         with pytest.raises(core.CheckFailed, match="routes.toml not found"):
-            core.load_route_config("check_price")
+            core.load_route_config("check_flights")
 
 
 _SUCCESS_RESPONSE_TWO_OFFERS = {

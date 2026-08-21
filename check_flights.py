@@ -1,25 +1,21 @@
-"""Daily AMS -> {Gorakhpur-area airports} price comparison, pushed to WhatsApp.
+"""Daily AMS -> {candidate Indian destinations} price comparison, pushed
+to WhatsApp.
 
-Independent of check_price.py's AMS->DEL check -- separate route,
-separate WhatsApp message, separate workflow/cron. They share
-flightwatch_core.py's SerpApi/CallMeBot logic only.
-
-Origin/date/currency/candidates come from routes.toml's [check_gorakhpur]
-table -- edit that file, not this one, to change them.
-
-Candidates (confirmed with the user -- see README): GOP (Gorakhpur
-itself) and KBK (Kushinagar, ~55km away, newer airport with some
-international connectivity). VNS/LKO/PAT (200km+) deliberately excluded.
+Candidates and route/date come from routes.toml's [check_flights] section
+(see load_route_config in flightwatch_core.py) -- edit that file to add,
+remove, or retarget a candidate; this script has no hardcoded airport
+list. See README.md's "Airports considered" table for the full
+reasoning behind which candidates are active vs. deliberately dropped
+(GOP, KBK, KNU) -- this script only reflects whatever routes.toml
+currently says, not the history of how that list got here.
 
 Cheapest-price-only for now. Factoring in ground travel time/cost from
-each candidate airport to Gorakhpur itself (mirroring flight-agent's own
-D7 formula) is an explicit, tracked v2 TODO -- see README -- not built
-here; it would need real distance/time/cost data this script does not
-have.
+whichever candidate wins to the traveller's actual final destination is
+an explicit, tracked v2 TODO -- see README -- not built here; it would
+need real distance/time/cost data this script does not have.
 
-Same three secrets as check_price.py (SERPAPI_KEY, CALLMEBOT_PHONE,
-CALLMEBOT_APIKEY) -- no new secrets needed, same SerpApi account, same
-WhatsApp number.
+Same three secrets as before (SERPAPI_KEY, CALLMEBOT_PHONE,
+CALLMEBOT_APIKEY) -- no new secrets needed.
 """
 
 from __future__ import annotations
@@ -37,19 +33,17 @@ from flightwatch_core import (
     send_whatsapp,
 )
 
-_config = load_route_config("check_gorakhpur")
+_CONFIG = load_route_config("check_flights")
 
-DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or _config["departure_id"]
-OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or _config["outbound_date"]
-CURRENCY = os.environ.get("FLIGHT_CURRENCY") or _config["currency"]
-"""Same override convention as check_price.py's own env vars -- the daily
-cron never sets these, so production behaviour is driven by routes.toml,
-not a Python literal; overridable for testing with a near-term date.
-Deliberately no FLIGHT_ARRIVAL_ID override here -- the candidate list
-below is this script's whole point, not a single overridable
-destination."""
+# `or` rather than dict.get's own default arg -- a workflow_dispatch input
+# left blank still SETS the env var (to ""), it doesn't omit it, so the
+# fallback has to treat "" the same as unset. The daily cron never sets
+# this env var, so production behaviour always comes from routes.toml.
+DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or _CONFIG["departure_id"]
+OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or _CONFIG["outbound_date"]
+CURRENCY = os.environ.get("FLIGHT_CURRENCY") or _CONFIG["currency"]
 
-CANDIDATES = tuple((candidate["id"], candidate["label"]) for candidate in _config["candidates"])
+CANDIDATES = tuple((c["id"], c["label"]) for c in _CONFIG["candidates"])
 
 
 class Outcome(Enum):
@@ -106,7 +100,7 @@ def build_comparison(results: list[CandidateResult]) -> str:
         results, key=lambda r: (r.price is None, r.price if r.price is not None else 0.0)
     )
     return (
-        f"Gorakhpur-area watch from {DEPARTURE_ID} on {OUTBOUND_DATE}\n"
+        f"Flight watch from {DEPARTURE_ID} on {OUTBOUND_DATE}\n"
         + "\n".join(result.line for result in ordered)
     )
 
@@ -116,12 +110,11 @@ def main() -> int:
 
     all_no_data_yet = all(result.outcome is Outcome.NO_DATA_YET for result in results)
     if all_no_data_yet:
-        # Deliberately silent on WhatsApp -- matches check_price.py's own
-        # philosophy: every candidate having nothing published yet is the
-        # routine outcome for a far-future date, not worth a daily ping.
-        # A genuine ERROR outcome is NOT covered by this branch -- see the
-        # `all()` above, which is only true when every single result is
-        # NO_DATA_YET, never when one of them is ERROR.
+        # Deliberately silent on WhatsApp -- every candidate having
+        # nothing published yet is the routine outcome for a far-future
+        # date, not worth a daily ping. A genuine ERROR outcome is NOT
+        # covered by this branch -- the all() above is only true when
+        # every single result is NO_DATA_YET, never when one is ERROR.
         print("(no WhatsApp sent, all candidates have no data yet)", file=sys.stderr)
         for result in results:
             print(result.line, file=sys.stderr)
@@ -130,12 +123,14 @@ def main() -> int:
     message = build_comparison(results)
     print(message)
     send_whatsapp(message)
-    # Matches check_price.py's own exit-code discipline: 1 only when a
-    # GENUINE failure occurred (at least one candidate is ERROR), never
-    # for the routine "found a price"/"no data yet" outcomes -- so the
-    # Actions UI shows red exactly when something is actually broken.
-    any_error = any(result.outcome is Outcome.ERROR for result in results)
-    return 1 if any_error else 0
+
+    # A genuine ERROR outcome on ANY candidate must make the whole run
+    # exit 1 -- matches the pre-merge check_price.py's own discipline
+    # (exit 1 only for a real failure, never for the routine no-data
+    # case) even though this script covers several candidates at once.
+    if any(result.outcome is Outcome.ERROR for result in results):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

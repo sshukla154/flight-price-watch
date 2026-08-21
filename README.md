@@ -1,104 +1,96 @@
 # flight-price-watch
 
-Two independent daily checks, both pushing to WhatsApp:
+One daily check, pushing to WhatsApp: compares the cheapest AMS one-way
+fare to several candidate Indian destination airports, on a fixed date.
 
-1. **`check_price.py`** — one fixed route, AMS → DEL, 2027-07-17.
-2. **`check_gorakhpur.py`** — AMS against two candidate destination
-   airports near Gorakhpur (GOP, KBK), comparing which is cheaper.
+## How it works
 
-They share `flightwatch_core.py`'s SerpApi/CallMeBot logic but are
-otherwise unrelated — separate schedules, separate WhatsApp messages,
-separate failure handling. Nothing fancier than that in v1 — no history
-log (see "Possible v2" below).
-
-## How `check_price.py` works
-
-1. GitHub Actions runs it on a daily cron (`0 6 * * *` UTC, `daily-check.yml`),
-   or on demand via the Actions tab's "Run workflow" button.
-2. It queries [SerpApi's Google Flights API](https://serpapi.com/google-flights-api)
-   for the cheapest one-way AMS→DEL fare on 2027-07-17.
-3. If a real price was found, it sends one WhatsApp message with the
-   result via [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/).
-4. If Google Flights simply has no fare data for 2027-07-17 yet (see
-   "Why today's run might fail" below), **no WhatsApp message is sent** —
-   only logged in the Action's own run output. That's the expected daily
-   outcome for a while, not a failure, and pinging you every day with
+1. GitHub Actions runs `check_flights.py` on a daily cron (`0 6 * * *`
+   UTC, `.github/workflows/daily-check.yml`), or on demand via the
+   Actions tab's "Run workflow" button.
+2. For each candidate airport in `routes.toml`'s `[check_flights]`
+   section, it queries [SerpApi's Google Flights API](https://serpapi.com/google-flights-api)
+   for the cheapest one-way fare from AMS on the configured date.
+3. It builds **one combined WhatsApp message** comparing every
+   candidate, cheapest first, and sends it via
+   [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/)
+   — but only if at least one candidate has a real price or a real
+   error. If every single candidate has no fare data yet, **no WhatsApp
+   message is sent** — only logged in the Action's own run output.
+   That's the expected daily outcome for a while (see "Why today's run
+   might fail" below), not a failure, and pinging you every day with
    "still nothing" would be noise.
-5. Any OTHER failure (a real SerpApi error, a malformed response, a
-   CallMeBot send failure) still sends a WhatsApp message saying so — a
-   silent failure on a daily job is worse than a noisy one, just not for
-   the routine "not published yet" case above.
+4. A genuine error on even one candidate (a real SerpApi error, a
+   malformed response, a CallMeBot send failure) still sends the
+   combined message and makes the whole run exit 1 — a silent failure
+   on a daily job is worse than a noisy one, just not for the routine
+   "not published yet" case above.
 
-## How `check_gorakhpur.py` works
+**Budget**: 4 candidates × 1 search/day ≈ 120 searches/month, well
+inside SerpApi's free-tier 250/month cap (~130/month spare).
 
-Same mechanics as above (`gorakhpur-check.yml`, cron `15 6 * * *` UTC —
-a few minutes offset from `daily-check.yml` just so the two don't hit
-SerpApi at the exact same instant), but it queries **both** candidate
-airports every run — GOP (Gorakhpur itself) and KBK (Kushinagar, ~55km
-away) — and sends **one combined message** comparing them, cheapest
-first. VNS/Lucknow/Patna (200km+ away) are deliberately excluded from
-this pass. Stays silent only when **both** candidates have no data yet;
-notifies the moment either one has a real price, or a real error, so a
-genuine failure on one candidate is never masked by the other's routine
-"no data yet."
+## Configuration — `routes.toml`
 
-**Budget**: `check_price.py` uses ~30 searches/month, `check_gorakhpur.py`
-uses ~60/month (2 candidates × 1/day) — ~90/month combined, well inside
-SerpApi's free-tier 250/month cap.
+The **one file to edit** to change the route, date, or candidate
+airports — no Python edit needed:
 
-## Why today's run might fail
+```toml
+[check_flights]
+departure_id = "AMS"
+outbound_date = "2027-07-17"
+currency = "EUR"
+candidates = [
+    { id = "DEL", label = "Delhi" },
+    { id = "VNS", label = "Varanasi" },
+    { id = "LKO", label = "Lucknow" },
+    { id = "DXN", label = "Noida (Jewar)" },
+]
+```
+
+`FLIGHT_DEPARTURE_ID` / `FLIGHT_OUTBOUND_DATE` / `FLIGHT_CURRENCY`
+environment variables still override these for one-off diagnostic runs
+(e.g. `workflow_dispatch` with a near-term test date) — precedence is
+env var > `routes.toml`. There's no per-run override for the candidate
+list itself; edit `routes.toml` and commit for that.
+
+### Airports considered (reference — so a future change doesn't start from scratch)
+
+| Code | Name | Status | Why |
+|---|---|---|---|
+| DEL | Delhi | Active | Major established international hub |
+| VNS | Varanasi | Active | Real international connectivity |
+| LKO | Lucknow | Active | Real international connectivity (Chaudhary Charan Singh Int'l) |
+| DXN | Noida (Jewar) | Active | Brand new (commercial ops began 2026-06-15), Zurich Airport International-operated, real ambition (12M pax capacity, meant to complement DEL) — but SerpApi/Google Flights coverage for it is genuinely unverified, being so new |
+| GOP | Gorakhpur | Dropped | Small regional airport, likely poor international coverage even though geographically closest to the traveller's actual destination |
+| KBK | Kushinagar | Dropped | ~55km from Gorakhpur, has some international ambition, but **live-tested and confirmed zero Google Flights coverage** even on a near-term date (2026-10-15) — not a schedule-horizon issue, a real coverage gap |
+| KNU | Kanpur (Chakeri) | Dropped | Small, domestic-focused — never live-tested, but unpromising for the same reason as GOP |
+
+## Why today's run might fail (or partially fail)
 
 2027-07-17 is far enough out that airline schedules/fares may not be
-loaded into Google Flights yet — typically published 330-360 days
-before departure, and that window is right around now for this date.
-The daily job will just start succeeding on its own once real data
-loads; no action needed. If you want to confirm the pipeline itself
-works before then, trigger it manually with a near-term date:
+loaded into Google Flights yet for some or all candidates — typically
+published 330-360 days before departure, and that window is right
+around now for this date. The daily job will just start succeeding on
+its own once real data loads; no action needed.
+
+**DXN specifically** is a second, independent reason a candidate might
+show "no data yet" regardless of date — it only started commercial
+operations 2026-06-15, so Google Flights may simply not have indexed it
+yet at all.
+
+Test any of this directly with a near-term override date instead of
+waiting:
 
 ```bash
 gh workflow run daily-check.yml --repo <your-username>/flight-price-watch -f outbound_date=2026-10-15
 ```
-
-The same question applies separately to `check_gorakhpur.py` — GOP/KBK
-are much smaller airports than DEL, so their real-world SerpApi/Google
-Flights coverage isn't something to assume works just because DEL's
-does. Test it the same way, with the same near-term-date override:
-
-```bash
-gh workflow run gorakhpur-check.yml --repo <your-username>/flight-price-watch -f outbound_date=2026-10-15
-```
-
-## Configuration
-
-Route/date/currency/candidates live in **`routes.toml`** — the one file
-to edit to change what gets checked. Nothing secret in it (secrets are
-the three GitHub Actions repo secrets below, never a file in this repo).
-The existing `FLIGHT_*` env-var overrides (used for one-off
-`workflow_dispatch` diagnostic runs) still take precedence over
-`routes.toml` when set — env var > `routes.toml`.
-
-## Running tests
-
-```bash
-python -m venv .venv
-.venv/Scripts/activate   # or: source .venv/bin/activate on macOS/Linux
-pip install -r requirements-dev.txt
-pytest
-ruff check .
-```
-
-Tests never call the real SerpApi/CallMeBot APIs — every HTTP call is
-mocked with `requests_mock`, using response shapes verified against the
-real APIs during development. `.github/workflows/ci.yml` runs both on
-every push/PR; it needs none of the three product secrets, since nothing
-it runs ever makes a real network call.
 
 ## One-time setup
 
 ### 1. SerpApi (the data source)
 
 1. Sign up at [serpapi.com](https://serpapi.com) — the **Free** plan is
-   $0/month, 250 searches/month. One run/day here uses ~30/month.
+   $0/month, 250 searches/month.
 2. Copy your API key from the dashboard.
 
 ### 2. CallMeBot (WhatsApp sending)
@@ -125,43 +117,51 @@ gh secret set CALLMEBOT_APIKEY --repo <your-username>/flight-price-watch
 either way it never appears in your shell history if you paste at the
 prompt rather than passing it as a CLI argument.)
 
-Both workflows read the same three secrets — nothing extra to set up for
-`check_gorakhpur.py`.
-
-### 4. Test before trusting the daily crons
+### 4. Test before trusting the daily cron
 
 ```bash
 gh workflow run daily-check.yml --repo <your-username>/flight-price-watch
-gh workflow run gorakhpur-check.yml --repo <your-username>/flight-price-watch
 gh run watch --repo <your-username>/flight-price-watch
 ```
 
-Confirm a WhatsApp message actually arrives for each before walking away
-and trusting the schedules.
+Confirm a WhatsApp message actually arrives before walking away and
+trusting the schedule.
 
-## Testing locally (optional)
+## Running tests / lint locally
+
+```bash
+python -m venv .venv
+.venv/Scripts/activate   # or: source .venv/bin/activate on macOS/Linux
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+ruff check .
+```
+
+Every test mocks SerpApi/CallMeBot via `requests_mock` — no real network
+call, no quota spent, ever, by the test suite. `.github/workflows/ci.yml`
+runs the same two commands on every push/PR, separate from the daily
+product-automation workflow above; it needs none of the three product
+secrets, since nothing it runs ever makes a real network call.
+
+## Testing locally against the real APIs (optional)
 
 ```bash
 cp .env.example .env   # fill in real values, never commit this file
-pip install -r requirements.txt
 export $(cat .env | xargs)   # or use a tool like direnv
-python check_price.py
-python check_gorakhpur.py
+python check_flights.py
 ```
 
 ## Possible v2 (not built, deliberately)
 
-- A committed price-history log (CSV/JSON), so trends are visible beyond
-  WhatsApp chat history.
-- Rotating through multiple origins (flight-agent's own 10-airport list
-  near Nieuwegein) — deferred because there's no real decision rule for
-  this yet, and building one speculatively would be infrastructure for a
-  policy that doesn't exist.
-- **Ground-travel-aware "best" scoring for `check_gorakhpur.py`**
-  (explicitly requested by the user, tracked here rather than forgotten):
-  today "best" means cheapest price only. A real v2 would factor in
-  actual ground travel time/cost from GOP/KBK to Gorakhpur itself,
-  mirroring `flight-agent`'s own D7 formula
+- A committed price-history log (trends visible beyond WhatsApp chat
+  history).
+- Rotating through more origins (`flight-agent`'s own 10-airport list
+  near Nieuwegein) — no real decision rule exists for this yet.
+- **Ground-travel-aware "best" scoring** (explicitly requested by the
+  user, tracked here rather than forgotten): today "best" means cheapest
+  price only. A real v2 would factor in actual ground travel time/cost
+  from whichever candidate airport wins to the traveller's real final
+  destination, mirroring `flight-agent`'s own D7 formula
   (`total_journey_score = adjusted_score + ground_cost_component + ground_time_component`)
-  — needs real distance/time/cost data per candidate airport, which
-  doesn't exist anywhere in this repo yet.
+  — needs real distance/time/cost data per candidate, which doesn't
+  exist anywhere in this repo yet.
