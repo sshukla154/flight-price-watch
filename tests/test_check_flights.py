@@ -7,10 +7,10 @@ candidate in EITHER category, never when even one candidate has a real
 finding or a real error (and a real error must still exit 1).
 
 Candidates come from routes.toml's [check_flights] section at import
-time (DEL, VNS, LKO, DXN as of this writing) -- these tests exercise the
-logic generically via check_flights.CANDIDATES rather than hardcoding
-which four airports are configured, so they stay correct if routes.toml
-changes.
+time (DEL, BOM, VNS, LKO, DXN as of this writing, each with its own
+one_stop eligibility flag) -- these tests exercise the logic generically
+via check_flights.CANDIDATES rather than hardcoding which airports are
+configured, so they stay correct if routes.toml changes.
 """
 
 from __future__ import annotations
@@ -232,15 +232,33 @@ class TestFormatTable:
 
 
 class TestCheckOne:
-    def test_price_found_in_both_categories(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_price_found_in_both_categories_when_one_stop_eligible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             cf, "fetch_all_itineraries", lambda **_: [_DIRECT_ITINERARY, _ONE_STOP_ITINERARY]
         )
 
-        outcome = cf._check_one("DEL", "Delhi")
+        outcome = cf._check_one("DEL", "Delhi", True)
 
         assert outcome.direct_row is not None and outcome.direct_row.price == "480"
         assert outcome.one_stop_row is not None and outcome.one_stop_row.price == "356"
+        assert outcome.error_line is None
+
+    def test_one_stop_bucket_dropped_when_not_eligible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The actual bug being fixed: VNS/LKO/DXN should never show a
+        1-STOP result, even when SerpApi genuinely has one -- only
+        DIRECT is meaningful for a near-destination airport."""
+        monkeypatch.setattr(
+            cf, "fetch_all_itineraries", lambda **_: [_DIRECT_ITINERARY, _ONE_STOP_ITINERARY]
+        )
+
+        outcome = cf._check_one("VNS", "Varanasi", False)
+
+        assert outcome.direct_row is not None and outcome.direct_row.price == "480"
+        assert outcome.one_stop_row is None
         assert outcome.error_line is None
 
     def test_no_flights_found_yet_gives_all_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -249,7 +267,7 @@ class TestCheckOne:
 
         monkeypatch.setattr(cf, "fetch_all_itineraries", _raise)
 
-        outcome = cf._check_one("DXN", "Noida (Jewar)")
+        outcome = cf._check_one("DXN", "Noida (Jewar)", False)
 
         assert outcome == cf.CandidateOutcome(direct_row=None, one_stop_row=None, error_line=None)
 
@@ -258,7 +276,7 @@ class TestCheckOne:
     ) -> None:
         monkeypatch.setattr(cf, "fetch_all_itineraries", lambda **_: [_TWO_STOP_ITINERARY])
 
-        outcome = cf._check_one("DEL", "Delhi")
+        outcome = cf._check_one("DEL", "Delhi", True)
 
         assert outcome.direct_row is None
         assert outcome.one_stop_row is None
@@ -270,7 +288,7 @@ class TestCheckOne:
 
         monkeypatch.setattr(cf, "fetch_all_itineraries", _raise)
 
-        outcome = cf._check_one("VNS", "Varanasi")
+        outcome = cf._check_one("VNS", "Varanasi", False)
 
         assert outcome.direct_row is None
         assert outcome.one_stop_row is None
@@ -587,7 +605,7 @@ class TestMainSilenceRule:
 
         assert exit_code == 0
         assert len(sent) == 1
-        for arrival_id, _label in cf.CANDIDATES:
+        for arrival_id, _label, _one_stop in cf.CANDIDATES:
             assert arrival_id in sent[0]
 
     def test_github_actions_env_routes_to_email_instead(

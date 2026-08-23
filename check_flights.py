@@ -70,7 +70,7 @@ CURRENCY = os.environ.get("FLIGHT_CURRENCY") or _CONFIG["currency"]
 ADULTS = int(os.environ.get("FLIGHT_ADULTS") or _CONFIG["adults"])
 CHILDREN = int(os.environ.get("FLIGHT_CHILDREN") or _CONFIG["children"])
 
-CANDIDATES = tuple((c["id"], c["label"]) for c in _CONFIG["candidates"])
+CANDIDATES = tuple((c["id"], c["label"], c["one_stop"]) for c in _CONFIG["candidates"])
 
 _DIRECT = 0
 _ONE_STOP = 1
@@ -236,11 +236,16 @@ def _format_row_detail(row: CategoryRow) -> str:
     )
 
 
-def _check_one(arrival_id: str, label: str) -> CandidateOutcome:
+def _check_one(arrival_id: str, label: str, one_stop_eligible: bool) -> CandidateOutcome:
     """One candidate's outcome across both categories. Never raises --
     every exception fetch_all_itineraries can produce is caught HERE,
     per candidate, so one candidate's failure never hides another
-    candidate's real result."""
+    candidate's real result.
+
+    one_stop_eligible=False means a one-stop bucket is deliberately
+    discarded even if SerpApi returned one -- reaching a
+    near-destination airport (VNS/LKO/DXN) via one layover isn't a
+    comparison this trip cares about, only DIRECT is shown for those."""
     try:
         itineraries = fetch_all_itineraries(
             departure_id=DEPARTURE_ID,
@@ -264,7 +269,9 @@ def _check_one(arrival_id: str, label: str) -> CandidateOutcome:
         _row_from_itinerary(label, arrival_id, best[_DIRECT]) if _DIRECT in best else None
     )
     one_stop_row = (
-        _row_from_itinerary(label, arrival_id, best[_ONE_STOP]) if _ONE_STOP in best else None
+        _row_from_itinerary(label, arrival_id, best[_ONE_STOP])
+        if one_stop_eligible and _ONE_STOP in best
+        else None
     )
     # best may legitimately be empty (every itinerary SerpApi returned had
     # 2+ stops) -- that's the same "nothing useful to report" situation as
@@ -383,7 +390,10 @@ def main() -> int:
         print(f"Unknown FLIGHT_NOTIFY_CHANNEL '{channel}'", file=sys.stderr)
         return 1
 
-    outcomes = [_check_one(arrival_id, label) for arrival_id, label in CANDIDATES]
+    outcomes = [
+        _check_one(arrival_id, label, one_stop_eligible)
+        for arrival_id, label, one_stop_eligible in CANDIDATES
+    ]
 
     has_any_finding = any(
         o.direct_row is not None or o.one_stop_row is not None or o.error_line is not None

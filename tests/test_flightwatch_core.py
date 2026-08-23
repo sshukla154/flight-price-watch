@@ -36,10 +36,11 @@ class TestLoadRouteConfig:
         assert config["adults"] == 2
         assert config["children"] == 1
         assert config["candidates"] == [
-            {"id": "DEL", "label": "Delhi"},
-            {"id": "VNS", "label": "Varanasi"},
-            {"id": "LKO", "label": "Lucknow"},
-            {"id": "DXN", "label": "Noida (Jewar)"},
+            {"id": "DEL", "label": "Delhi", "one_stop": True},
+            {"id": "BOM", "label": "Mumbai", "one_stop": True},
+            {"id": "VNS", "label": "Varanasi", "one_stop": False},
+            {"id": "LKO", "label": "Lucknow", "one_stop": False},
+            {"id": "DXN", "label": "Noida (Jewar)", "one_stop": False},
         ]
 
     def test_missing_section_raises_check_failed(self) -> None:

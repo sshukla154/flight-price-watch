@@ -14,8 +14,9 @@ script runs — see "Notification channel" below.
    section, it queries [SerpApi's Google Flights API](https://serpapi.com/google-flights-api)
    **once** for every one-way fare from AMS on the configured date, then
    locally splits the results into the cheapest **direct** option and
-   the cheapest **1-stop (max)** option — one search per candidate
-   either way, never two, to stay inside the monthly search budget.
+   (for hub candidates only — see below) the cheapest **1-stop (max)**
+   option — one search per candidate either way, never two, to stay
+   inside the monthly search budget.
 3. It builds a report with two sections — `DIRECT` and `1 STOP (max)`
    — each a monospace table listing every candidate that has an option
    in that category (cheapest-per-airport, not sorted by price across
@@ -45,9 +46,19 @@ script runs — see "Notification channel" below.
    that's the stopover's name/code plus the AMS-to-stopover leg
    duration, the layover, and the stopover-to-destination leg duration
    (all three sum to the table's own Total column); for DIRECT it's
-   just the baggage note. Two caveats on what SerpApi's Google Flights
-   data actually contains, both checked directly against their docs
-   rather than assumed:
+   just the baggage note.
+
+   **1-STOP is only computed for hub candidates** (`one_stop = true`
+   in `routes.toml`, currently DEL and BOM) — "1 stop" here means
+   "reach a major hub via one layover," not "search a one-layover
+   itinerary all the way into a near-destination airport." VNS/LKO/DXN
+   are DIRECT-only by design: even if SerpApi returns a real one-stop
+   option for them, it's deliberately discarded, never shown. See
+   "Airports considered" below for which candidates are hub-eligible.
+
+   Two caveats on what SerpApi's Google Flights data actually
+   contains, both checked directly against their docs rather than
+   assumed:
    - **No self-transfer field**: nothing distinguishes a self-transfer
      (separate tickets, re-check-in required) from a protected
      through-connection, so the 1-STOP breakdown doesn't claim to show
@@ -76,8 +87,8 @@ script runs — see "Notification channel" below.
    failure on a daily job is worse than a noisy one, just not for the
    routine "not published yet" case above.
 
-**Budget**: 4 candidates × 1 search/day ≈ 120 searches/month, well
-inside SerpApi's free-tier 250/month cap (~130/month spare).
+**Budget**: 5 candidates × 1 search/day ≈ 150 searches/month, well
+inside SerpApi's free-tier 250/month cap (~100/month spare).
 
 ## Notification channel
 
@@ -122,7 +133,7 @@ airports — no Python edit needed. Quick reference:
 | Want to change | Field | Example |
 |---|---|---|
 | From location (departure airport) | `departure_id` | `"AMS"` |
-| To location(s) (destination airports compared) | `candidates` | add/remove `{ id = "...", label = "..." }` entries |
+| To location(s) (destination airports compared) | `candidates` | add/remove `{ id = "...", label = "...", one_stop = true/false }` entries |
 | Date of travel | `outbound_date` | `"2027-07-17"` |
 | Passengers | `adults` / `children` | `2` / `1` — headcount only, SerpApi has no age field (a 7-year-old is just `children = 1`) |
 
@@ -137,12 +148,18 @@ currency = "EUR"
 adults = 2
 children = 1
 candidates = [
-    { id = "DEL", label = "Delhi" },
-    { id = "VNS", label = "Varanasi" },
-    { id = "LKO", label = "Lucknow" },
-    { id = "DXN", label = "Noida (Jewar)" },
+    { id = "DEL", label = "Delhi", one_stop = true },
+    { id = "BOM", label = "Mumbai", one_stop = true },
+    { id = "VNS", label = "Varanasi", one_stop = false },
+    { id = "LKO", label = "Lucknow", one_stop = false },
+    { id = "DXN", label = "Noida (Jewar)", one_stop = false },
 ]
 ```
+
+`one_stop = true` means "also compute/show a 1-STOP result for this
+candidate" — reserved for major hubs where a one-layover itinerary is
+a meaningful comparison. `false` means DIRECT-only, always, even if
+SerpApi genuinely has a one-stop option for that candidate.
 
 `FLIGHT_DEPARTURE_ID` / `FLIGHT_OUTBOUND_DATE` / `FLIGHT_CURRENCY` /
 `FLIGHT_ADULTS` / `FLIGHT_CHILDREN` environment variables still
@@ -153,15 +170,16 @@ list itself; edit `routes.toml` and commit for that.
 
 ### Airports considered (reference — so a future change doesn't start from scratch)
 
-| Code | Name | Status | Why |
-|---|---|---|---|
-| DEL | Delhi | Active | Major established international hub |
-| VNS | Varanasi | Active | Real international connectivity |
-| LKO | Lucknow | Active | Real international connectivity (Chaudhary Charan Singh Int'l) |
-| DXN | Noida (Jewar) | Active | Brand new (commercial ops began 2026-06-15), Zurich Airport International-operated, real ambition (12M pax capacity, meant to complement DEL) — but SerpApi/Google Flights coverage for it is genuinely unverified, being so new |
-| GOP | Gorakhpur | Dropped | Small regional airport, likely poor international coverage even though geographically closest to the traveller's actual destination |
-| KBK | Kushinagar | Dropped | ~55km from Gorakhpur, has some international ambition, but **live-tested and confirmed zero Google Flights coverage** even on a near-term date (2026-10-15) — not a schedule-horizon issue, a real coverage gap |
-| KNU | Kanpur (Chakeri) | Dropped | Small, domestic-focused — never live-tested, but unpromising for the same reason as GOP |
+| Code | Name | Status | 1-STOP eligible | Why |
+|---|---|---|---|---|
+| DEL | Delhi | Active | Yes | Major established international hub |
+| BOM | Mumbai | Active | Yes | Major established international hub — already proven to have real SerpApi/Google Flights coverage, having shown up as a real layover city in earlier live tests before being added as its own candidate |
+| VNS | Varanasi | Active | No | Real international connectivity, but DIRECT-only — a one-layover itinerary all the way into a near-destination airport isn't the "1 stop" comparison this trip wants |
+| LKO | Lucknow | Active | No | Real international connectivity (Chaudhary Charan Singh Int'l), same DIRECT-only reasoning as VNS |
+| DXN | Noida (Jewar) | Active | No | Brand new (commercial ops began 2026-06-15), Zurich Airport International-operated, real ambition (12M pax capacity, meant to complement DEL) — DIRECT-only, same reasoning as VNS |
+| GOP | Gorakhpur | Dropped | -- | Small regional airport, likely poor international coverage even though geographically closest to the traveller's actual destination |
+| KBK | Kushinagar | Dropped | -- | ~55km from Gorakhpur, has some international ambition, but **live-tested and confirmed zero Google Flights coverage** even on a near-term date (2026-10-15) — not a schedule-horizon issue, a real coverage gap |
+| KNU | Kanpur (Chakeri) | Dropped | -- | Small, domestic-focused — never live-tested, but unpromising for the same reason as GOP |
 
 ## Why today's run might fail (or partially fail)
 

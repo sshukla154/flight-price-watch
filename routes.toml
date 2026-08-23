@@ -17,9 +17,16 @@ outbound_date = "2027-07-17"
 currency = "EUR"
 adults = 2
 children = 1
+# one_stop = true means "also compute/show a 1-STOP (one layover)
+# result for this candidate" -- reserved for major hubs where a
+# one-layover itinerary is a meaningful comparison. false means
+# DIRECT-only, deliberately: a one-stop itinerary all the way into a
+# near-destination airport (VNS/LKO/DXN) isn't what "1 stop" means for
+# this trip -- see README's "Airports considered" table.
 candidates = [
-    { id = "DEL", label = "Delhi" },
-    { id = "VNS", label = "Varanasi" },
-    { id = "LKO", label = "Lucknow" },
-    { id = "DXN", label = "Noida (Jewar)" },
+    { id = "DEL", label = "Delhi", one_stop = true },
+    { id = "BOM", label = "Mumbai", one_stop = true },
+    { id = "VNS", label = "Varanasi", one_stop = false },
+    { id = "LKO", label = "Lucknow", one_stop = false },
+    { id = "DXN", label = "Noida (Jewar)", one_stop = false },
 ]
