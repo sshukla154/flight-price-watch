@@ -627,3 +627,103 @@ class TestMainSilenceRule:
 
         assert exit_code == 1
         assert called == []  # fails before ever querying SerpApi
+
+
+class TestMainFallback:
+    """If the chosen channel's send itself fails, main() falls back to
+    the other channel once rather than crashing with an uncaught
+    exception -- traced live this session against a real CallMeBot
+    403."""
+
+    def _priced_fetch(self, priced_id: str):
+        def _fake_fetch(*, arrival_id: str, **_: object) -> list[dict[str, object]]:
+            if arrival_id == priced_id:
+                return [_DIRECT_ITINERARY]
+            raise core.NoFlightsFoundYet("no data yet")
+
+        return _fake_fetch
+
+    def test_primary_success_never_attempts_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)  # -> whatsapp primary
+        monkeypatch.setattr(
+            cf, "fetch_all_itineraries", self._priced_fetch(cf.CANDIDATES[0][0])
+        )
+        whatsapp_sent: list[str] = []
+        email_sent: list[tuple[str, str]] = []
+        monkeypatch.setattr(cf, "send_whatsapp", whatsapp_sent.append)
+        monkeypatch.setattr(
+            cf, "send_email", lambda subject, body: email_sent.append((subject, body))
+        )
+
+        exit_code = cf.main()
+
+        assert exit_code == 0
+        assert len(whatsapp_sent) == 1
+        assert email_sent == []  # fallback never touched
+
+    def test_primary_failure_falls_back_and_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)  # -> whatsapp primary
+        monkeypatch.setattr(
+            cf, "fetch_all_itineraries", self._priced_fetch(cf.CANDIDATES[0][0])
+        )
+
+        def _failing_whatsapp(_message: str) -> None:
+            raise core.CheckFailed("CallMeBot returned HTTP 403: forbidden")
+
+        email_sent: list[tuple[str, str]] = []
+        monkeypatch.setattr(cf, "send_whatsapp", _failing_whatsapp)
+        monkeypatch.setattr(
+            cf, "send_email", lambda subject, body: email_sent.append((subject, body))
+        )
+
+        exit_code = cf.main()
+
+        assert exit_code == 0  # no per-candidate error_line, fallback delivered fine
+        assert len(email_sent) == 1
+        assert "480" in email_sent[0][1]
+
+    def test_both_channels_failing_exits_one_without_crashing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+        monkeypatch.setattr(
+            cf, "fetch_all_itineraries", self._priced_fetch(cf.CANDIDATES[0][0])
+        )
+
+        def _failing_whatsapp(_message: str) -> None:
+            raise core.CheckFailed("CallMeBot returned HTTP 403: forbidden")
+
+        def _failing_email(_subject: str, _body: str) -> None:
+            raise core.CheckFailed("Gmail SMTP send failed: connection refused")
+
+        monkeypatch.setattr(cf, "send_whatsapp", _failing_whatsapp)
+        monkeypatch.setattr(cf, "send_email", _failing_email)
+
+        # main() must return 1 cleanly -- if either CheckFailed escaped
+        # uncaught, this call itself would raise and fail the test.
+        exit_code = cf.main()
+
+        assert exit_code == 1
+
+    def test_fallback_direction_is_whatsapp_when_email_is_primary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")  # -> email primary
+        monkeypatch.setattr(
+            cf, "fetch_all_itineraries", self._priced_fetch(cf.CANDIDATES[0][0])
+        )
+
+        def _failing_email(_subject: str, _body: str) -> None:
+            raise core.CheckFailed("Gmail SMTP send failed: auth error")
+
+        whatsapp_sent: list[str] = []
+        monkeypatch.setattr(cf, "send_email", _failing_email)
+        monkeypatch.setattr(cf, "send_whatsapp", whatsapp_sent.append)
+
+        exit_code = cf.main()
+
+        assert exit_code == 0
+        assert len(whatsapp_sent) == 1
+        assert "480" in whatsapp_sent[0]

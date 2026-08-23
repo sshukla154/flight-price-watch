@@ -31,6 +31,14 @@ runner IP ranges -- confirmed by testing the same key/phone from a home
 network, where it works fine. Running locally (GITHUB_ACTIONS unset)
 defaults to WhatsApp. FLIGHT_NOTIFY_CHANNEL overrides either way, for
 testing. See README's "Notification channel" section.
+
+If the chosen (primary) channel's send itself fails -- a real
+CheckFailed from send_whatsapp/send_email, not a per-candidate SerpApi
+error -- main() falls back to the OTHER channel once before giving up.
+Both credentials are always configured in every environment (see
+README), so this costs nothing to attempt. If the fallback also fails,
+main() returns 1 cleanly rather than letting the exception crash the
+process uncaught.
 """
 
 from __future__ import annotations
@@ -357,6 +365,18 @@ def _build_email_body(outcomes: list[CandidateOutcome]) -> tuple[str, str]:
     return subject, html_body
 
 
+def _send_via(channel: str, whatsapp_message: str, email_subject: str, email_html: str) -> None:
+    """Print+send for one channel -- shared by main()'s primary attempt
+    and its fallback attempt so both go through identical logic."""
+    if channel == "whatsapp":
+        print(whatsapp_message)
+        send_whatsapp(whatsapp_message)
+    else:
+        print(email_subject)
+        print(email_html)
+        send_email(email_subject, email_html)
+
+
 def main() -> int:
     channel = _notify_channel()
     if channel not in ("whatsapp", "email"):
@@ -378,15 +398,29 @@ def main() -> int:
         print("(nothing to report for any candidate, no notification sent)", file=sys.stderr)
         return 0
 
-    if channel == "whatsapp":
-        message = _build_whatsapp_message(outcomes)
-        print(message)
-        send_whatsapp(message)
-    else:
-        subject, html_body = _build_email_body(outcomes)
-        print(subject)
-        print(html_body)
-        send_email(subject, html_body)
+    # Both forms are built unconditionally -- cheap string formatting,
+    # no extra API calls either way -- so a failed primary send can
+    # fall back to the other channel without rebuilding anything.
+    whatsapp_message = _build_whatsapp_message(outcomes)
+    email_subject, email_html = _build_email_body(outcomes)
+
+    primary = channel
+    fallback = "email" if primary == "whatsapp" else "whatsapp"
+    try:
+        _send_via(primary, whatsapp_message, email_subject, email_html)
+    except CheckFailed as primary_exc:
+        print(
+            f"{primary} notification failed ({primary_exc}) -- falling back to {fallback}",
+            file=sys.stderr,
+        )
+        try:
+            _send_via(fallback, whatsapp_message, email_subject, email_html)
+        except CheckFailed as fallback_exc:
+            print(
+                f"{fallback} fallback ALSO failed ({fallback_exc}) -- no notification delivered",
+                file=sys.stderr,
+            )
+            return 1
 
     # A genuine error on ANY candidate must make the whole run exit 1 --
     # matches this repo's own established discipline (exit 1 only for a

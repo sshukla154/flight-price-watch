@@ -104,6 +104,16 @@ Both channels' credentials are always configured (see "One-time
 setup") regardless of which one a given run actually uses — cheap to
 keep both ready since nothing about the WhatsApp path needed to change.
 
+**Fallback**: if the chosen channel's send itself fails (a real send
+error — CallMeBot down, a Gmail SMTP hiccup — not a per-candidate
+SerpApi error, which is handled separately via the `ERRORS` section),
+the run automatically retries once through the OTHER channel before
+giving up. Both message forms are always built regardless of channel,
+so this costs nothing extra. If the fallback also fails, the run exits
+1 with a clear log line for each attempt — no notification goes out
+that day, but the failure is visible in the Action's own log rather
+than an unhandled crash.
+
 ## Configuration — `routes.toml`
 
 The **one file to edit** to change the route, date, or candidate
