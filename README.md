@@ -1,7 +1,9 @@
 # flight-price-watch
 
-One daily check, pushing to WhatsApp: compares the cheapest AMS one-way
-fare to several candidate Indian destination airports, on a fixed date.
+One daily check, pushing a notification: compares the cheapest AMS
+one-way fare to several candidate Indian destination airports, on a
+fixed date. Notification channel picks itself based on where the
+script runs — see "Notification channel" below.
 
 ## How it works
 
@@ -14,49 +16,68 @@ fare to several candidate Indian destination airports, on a fixed date.
    locally splits the results into the cheapest **direct** option and
    the cheapest **1-stop (max)** option — one search per candidate
    either way, never two, to stay inside the monthly search budget.
-3. It builds **one combined WhatsApp message** with two sections —
-   `DIRECT` and `1 STOP (max)` — each a monospace table listing every
-   candidate that has an option in that category (cheapest-per-airport,
-   not sorted by price across airports), with airline, departure/
-   arrival local time, transit (layover) time, and total duration.
-   WhatsApp has no real markdown table support (`|` pipes just show up
-   literally), so each table is a `` ``` ``-fenced, column-aligned block
-   — the only way to get things lining up on a phone. A candidate with
-   nothing in a category is simply omitted from that section, e.g.:
+3. It builds a report with two sections — `DIRECT` and `1 STOP (max)`
+   — each a monospace table listing every candidate that has an option
+   in that category (cheapest-per-airport, not sorted by price across
+   airports), with airline, departure/arrival local time, transit
+   (layover) time, and total duration. A candidate with nothing in a
+   category is simply omitted from that section, e.g.:
 
-   ````
+   ```
    Flight watch from AMS on 2027-07-17 (EUR)
 
    DIRECT
-   ```
    Airport  Price  Airline  Dep    Arr      Total
    -------  -----  -------  -----  -------  ------
    DEL         480  KLM      09:15  21:30    12h15m
-   ```
 
    1 STOP (max)
-   ```
    Airport  Price  Airline   Dep    Arr      Transit  Total
    -------  -----  --------  -----  -------  -------  ------
    VNS         356  Oman Air  10:15  06:30+1  1h30m    15h15m
    ```
-   ````
 
-   Sent via [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/)
-   — but only if at least one candidate has a real finding (in either
-   category) or a real error. If every single candidate has nothing to
-   report, **no WhatsApp message is sent** — only logged in the Action's
-   own run output. That's the expected daily outcome for a while (see
-   "Why today's run might fail" below), not a failure, and pinging you
-   every day with "still nothing" would be noise.
+   Sent via **email or WhatsApp depending on where the script runs**
+   (see "Notification channel" below) — but only if at least one
+   candidate has a real finding (in either category) or a real error.
+   If every single candidate has nothing to report, **no notification
+   is sent** — only logged in the run's own output. That's the expected
+   daily outcome for a while (see "Why today's run might fail" below),
+   not a failure, and pinging you every day with "still nothing" would
+   be noise.
 4. A genuine error on even one candidate (a real SerpApi error, a
-   malformed response, a CallMeBot send failure) still sends the
-   message (in an `ERRORS` section) and makes the whole run exit 1 — a
-   silent failure on a daily job is worse than a noisy one, just not for
-   the routine "not published yet" case above.
+   malformed response, a send failure) still sends the notification (in
+   an `ERRORS` section) and makes the whole run exit 1 — a silent
+   failure on a daily job is worse than a noisy one, just not for the
+   routine "not published yet" case above.
 
 **Budget**: 4 candidates × 1 search/day ≈ 120 searches/month, well
 inside SerpApi's free-tier 250/month cap (~130/month spare).
+
+## Notification channel
+
+CallMeBot's free WhatsApp API blocks GitHub Actions' shared runner IP
+ranges (confirmed by testing: the same key/phone works instantly from
+a home network, but every GitHub Actions attempt fails identically
+regardless of trigger type or timing — not a rate limit, a standing
+block on that class of IP). So the channel is picked automatically:
+
+- **Running in GitHub Actions** (`GITHUB_ACTIONS=true`, set
+  automatically in every job) → **email**, via Gmail SMTP. Sent as
+  HTML with a `<pre>` monospace block, since Gmail's plain-text view
+  uses a proportional font that would misalign the raw table — same
+  reason WhatsApp needed its own ``` ` ``` fence trick, just solved
+  differently for email.
+- **Running anywhere else** (e.g. your own machine, on your home
+  network) → **WhatsApp**, via CallMeBot — this already works fine
+  from a residential IP.
+- `FLIGHT_NOTIFY_CHANNEL=email` or `FLIGHT_NOTIFY_CHANNEL=whatsapp`
+  overrides the automatic pick either way, for testing one channel
+  from the "wrong" environment.
+
+Both channels' credentials are always configured (see "One-time
+setup") regardless of which one a given run actually uses — cheap to
+keep both ready since nothing about the WhatsApp path needed to change.
 
 ## Configuration — `routes.toml`
 
@@ -131,7 +152,7 @@ gh workflow run daily-check.yml --repo <your-username>/flight-price-watch -f out
    $0/month, 250 searches/month.
 2. Copy your API key from the dashboard.
 
-### 2. CallMeBot (WhatsApp sending)
+### 2. CallMeBot (WhatsApp sending — used only for local runs)
 
 1. Add `+34 694 26 48 06` to your phone contacts.
 2. From your own WhatsApp, message that contact: `I allow callmebot to
@@ -139,7 +160,20 @@ gh workflow run daily-check.yml --repo <your-username>/flight-price-watch -f out
 3. Within ~2 minutes you'll get a reply containing your API key. If not,
    try again after 24h (documented rate limit on their side).
 
-### 3. Set the three GitHub Actions secrets
+### 3. Gmail (email sending — used only for GitHub Actions runs)
+
+1. Enable 2-Step Verification on the Gmail account, if not already on
+   (required before Google will issue an App Password):
+   [myaccount.google.com/security](https://myaccount.google.com/security).
+2. Generate an App Password at
+   [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+   (pick "Mail" and any device name) — copy the 16-character password
+   shown.
+3. That's your `GMAIL_APP_PASSWORD`; the Gmail address itself is
+   `GMAIL_ADDRESS`. This account sends the email to itself — no
+   separate recipient to configure.
+
+### 4. Set the GitHub Actions secrets
 
 Run these yourself with your real values — nobody else should ever see
 them, and they should never be typed into chat, a commit, or any file in
@@ -149,21 +183,24 @@ this repo:
 gh secret set SERPAPI_KEY --repo <your-username>/flight-price-watch
 gh secret set CALLMEBOT_PHONE --repo <your-username>/flight-price-watch
 gh secret set CALLMEBOT_APIKEY --repo <your-username>/flight-price-watch
+gh secret set GMAIL_ADDRESS --repo <your-username>/flight-price-watch
+gh secret set GMAIL_APP_PASSWORD --repo <your-username>/flight-price-watch
 ```
 
 (Each command prompts for the value interactively, or pipe it in —
 either way it never appears in your shell history if you paste at the
 prompt rather than passing it as a CLI argument.)
 
-### 4. Test before trusting the daily cron
+### 5. Test before trusting the daily cron
 
 ```bash
 gh workflow run daily-check.yml --repo <your-username>/flight-price-watch
 gh run watch --repo <your-username>/flight-price-watch
 ```
 
-Confirm a WhatsApp message actually arrives before walking away and
-trusting the schedule.
+Confirm a real email actually arrives before walking away and trusting
+the schedule — GitHub Actions always uses the email channel (see
+"Notification channel" above).
 
 ## Running tests / lint locally
 
@@ -175,11 +212,12 @@ pytest
 ruff check .
 ```
 
-Every test mocks SerpApi/CallMeBot via `requests_mock` — no real network
-call, no quota spent, ever, by the test suite. `.github/workflows/ci.yml`
-runs the same two commands on every push/PR, separate from the daily
-product-automation workflow above; it needs none of the three product
-secrets, since nothing it runs ever makes a real network call.
+Every test mocks SerpApi/CallMeBot/Gmail via `requests_mock` and
+`unittest.mock` — no real network call, no quota spent, ever, by the
+test suite. `.github/workflows/ci.yml` runs the same two commands on
+every push/PR, separate from the daily product-automation workflow
+above; it needs none of the product secrets, since nothing it runs
+ever makes a real network call.
 
 ## Testing locally against the real APIs (optional)
 
@@ -188,6 +226,11 @@ cp .env.example .env   # fill in real values, never commit this file
 export $(cat .env | xargs)   # or use a tool like direnv
 python check_flights.py
 ```
+
+`GITHUB_ACTIONS` won't be set in a local shell, so this picks the
+WhatsApp channel automatically — set `FLIGHT_NOTIFY_CHANNEL=email` in
+`.env` first if you want to test the email path from your own machine
+instead.
 
 ## Possible v2 (not built, deliberately)
 

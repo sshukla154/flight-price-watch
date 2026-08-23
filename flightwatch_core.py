@@ -1,21 +1,27 @@
-"""Shared SerpApi + CallMeBot logic used by every check_*.py driver script.
+"""Shared SerpApi + CallMeBot + Gmail logic used by every check_*.py
+driver script.
 
 Kept intentionally thin -- one HTTP call out to SerpApi's Google Flights
-API, one HTTP call out to CallMeBot's WhatsApp API, and the shared
-exception taxonomy that lets every driver script distinguish "a routine
-no-data-yet result" from "a genuine failure worth pinging WhatsApp about."
+API, one HTTP call out to CallMeBot's WhatsApp API, one SMTP call out to
+Gmail, and the shared exception taxonomy that lets every driver script
+distinguish "a routine no-data-yet result" from "a genuine failure worth
+notifying about." Which notification channel actually gets used for a
+given run is a driver script's own decision (see check_flights.py's
+_notify_channel) -- this module just exposes both primitives.
 
 Nothing here reads the FLIGHT_* env-var overrides or picks candidate
 airports -- that's each driver script's own job (check_price.py: one
 fixed route; check_gorakhpur.py: a small hardcoded candidate list). This
-module only knows how to run ONE query and send ONE WhatsApp message; it
-has no opinion about how many times a driver calls it per run.
+module only knows how to run ONE query and send ONE notification; it has
+no opinion about how many times a driver calls it per run.
 """
 
 from __future__ import annotations
 
 import os
+import smtplib
 import tomllib
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +29,8 @@ import requests
 
 SERPAPI_URL = "https://serpapi.com/search"
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
+GMAIL_SMTP_HOST = "smtp.gmail.com"
+GMAIL_SMTP_PORT = 465
 
 _ROUTES_CONFIG_PATH = Path(__file__).resolve().parent / "routes.toml"
 
@@ -150,3 +158,23 @@ def send_whatsapp(message: str) -> None:
         raise CheckFailed(
             f"CallMeBot returned HTTP {response.status_code}: {response.text[:300]}"
         )
+
+
+def send_email(subject: str, html_body: str) -> None:
+    """Sends `html_body` as an HTML email from/to GMAIL_ADDRESS (sends
+    to itself -- no separate recipient config needed). Any SMTP failure
+    (auth, connection, etc.) is re-raised as CheckFailed so callers
+    treat it exactly like a CallMeBot failure -- same taxonomy, same
+    exit-1-on-genuine-error handling."""
+    address = _env("GMAIL_ADDRESS")
+    message = MIMEText(html_body, "html")
+    message["Subject"] = subject
+    message["From"] = address
+    message["To"] = address
+
+    try:
+        with smtplib.SMTP_SSL(GMAIL_SMTP_HOST, GMAIL_SMTP_PORT) as smtp:
+            smtp.login(address, _env("GMAIL_APP_PASSWORD"))
+            smtp.sendmail(address, [address], message.as_string())
+    except (smtplib.SMTPException, OSError) as exc:
+        raise CheckFailed(f"Gmail SMTP send failed: {exc}") from exc

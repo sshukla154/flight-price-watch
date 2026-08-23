@@ -7,6 +7,8 @@ spend real SerpApi/CallMeBot quota just to prove the logic is correct.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 import requests_mock
 
@@ -21,6 +23,8 @@ def _serpapi_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SERPAPI_KEY", "test-key")
     monkeypatch.setenv("CALLMEBOT_PHONE", "+310000000")
     monkeypatch.setenv("CALLMEBOT_APIKEY", "test-callmebot-key")
+    monkeypatch.setenv("GMAIL_ADDRESS", "test@gmail.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "test-app-password")
 
 
 class TestLoadRouteConfig:
@@ -176,3 +180,27 @@ class TestSendWhatsapp:
             mock.get(core.CALLMEBOT_URL, status_code=400, text="bad phone number")
             with pytest.raises(core.CheckFailed, match="CallMeBot returned HTTP 400"):
                 core.send_whatsapp("hello")
+
+
+class TestSendEmail:
+    def test_success_logs_in_and_sends_from_and_to_the_same_address(self) -> None:
+        smtp_instance = MagicMock()
+        smtp_instance.__enter__ = MagicMock(return_value=smtp_instance)
+        smtp_instance.__exit__ = MagicMock(return_value=False)
+
+        with patch("flightwatch_core.smtplib.SMTP_SSL", return_value=smtp_instance) as ssl_cls:
+            core.send_email("subject", "<pre>body</pre>")
+
+        ssl_cls.assert_called_once_with(core.GMAIL_SMTP_HOST, core.GMAIL_SMTP_PORT)
+        smtp_instance.login.assert_called_once_with("test@gmail.com", "test-app-password")
+        args, _ = smtp_instance.sendmail.call_args
+        from_addr, to_addrs, raw_message = args
+        assert from_addr == "test@gmail.com"
+        assert to_addrs == ["test@gmail.com"]
+        assert "subject" in raw_message
+        assert "<pre>body</pre>" in raw_message
+
+    def test_smtp_exception_raises_check_failed(self) -> None:
+        with patch("flightwatch_core.smtplib.SMTP_SSL", side_effect=OSError("connection refused")):
+            with pytest.raises(core.CheckFailed, match="Gmail SMTP send failed"):
+                core.send_email("subject", "<pre>body</pre>")

@@ -1,10 +1,10 @@
 """Tests for check_flights.py -- stop-category bucketing, per-category
 row construction (including the departure/arrival time-of-day "+1"
-day-rollover suffix), the generic monospace table formatter, and the
-generalized silence rule: stay silent on WhatsApp only when there is
-truly nothing to report for ANY candidate in EITHER category, never
-when even one candidate has a real finding or a real error (and a real
-error must still exit 1).
+day-rollover suffix), the generic monospace table formatter, the
+whatsapp-vs-email channel selection, and the generalized silence rule:
+stay silent only when there is truly nothing to report for ANY
+candidate in EITHER category, never when even one candidate has a real
+finding or a real error (and a real error must still exit 1).
 
 Candidates come from routes.toml's [check_flights] section at import
 time (DEL, VNS, LKO, DXN as of this writing) -- these tests exercise the
@@ -201,7 +201,29 @@ class TestCheckOne:
         assert outcome.error_line is not None and "boom" in outcome.error_line
 
 
-class TestBuildMessage:
+class TestNotifyChannel:
+    def test_defaults_to_whatsapp_locally(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+        monkeypatch.delenv("FLIGHT_NOTIFY_CHANNEL", raising=False)
+        assert cf._notify_channel() == "whatsapp"
+
+    def test_defaults_to_email_on_github_actions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.delenv("FLIGHT_NOTIFY_CHANNEL", raising=False)
+        assert cf._notify_channel() == "email"
+
+    def test_override_wins_over_github_actions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("FLIGHT_NOTIFY_CHANNEL", "whatsapp")
+        assert cf._notify_channel() == "whatsapp"
+
+    def test_override_wins_locally_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+        monkeypatch.setenv("FLIGHT_NOTIFY_CHANNEL", "email")
+        assert cf._notify_channel() == "email"
+
+
+class TestBuildWhatsappMessage:
     def test_sections_omitted_when_empty(self) -> None:
         outcomes = [
             cf.CandidateOutcome(
@@ -219,7 +241,7 @@ class TestBuildMessage:
             )
         ]
 
-        message = cf._build_message(outcomes)
+        message = cf._build_whatsapp_message(outcomes)
 
         assert "DIRECT" in message
         assert "```" in message  # the direct table is fenced
@@ -243,7 +265,7 @@ class TestBuildMessage:
             )
         ]
 
-        message = cf._build_message(outcomes)
+        message = cf._build_whatsapp_message(outcomes)
 
         assert message.count(cf.CURRENCY) == 1
         assert "480" in message
@@ -275,15 +297,67 @@ class TestBuildMessage:
             ),
         ]
 
-        message = cf._build_message(outcomes)
+        message = cf._build_whatsapp_message(outcomes)
 
         assert "DIRECT" in message and "DEL" in message and "480" in message
         assert "1 STOP" in message and "VNS" in message and "364" in message
         assert "ERRORS" in message and "error -- boom" in message
 
 
+class TestBuildEmailBody:
+    def test_subject_and_html_pre_wrapping_no_fences(self) -> None:
+        outcomes = [
+            cf.CandidateOutcome(
+                direct_row=cf.CategoryRow(
+                    airport="DEL",
+                    price="480",
+                    airline="KLM",
+                    departure="09:15",
+                    arrival="21:30",
+                    total="12h15m",
+                    transit=None,
+                ),
+                one_stop_row=None,
+                error_line=None,
+            )
+        ]
+
+        subject, html_body = cf._build_email_body(outcomes)
+
+        assert subject == f"Flight watch: {cf.DEPARTURE_ID} on {cf.OUTBOUND_DATE}"
+        assert html_body.startswith('<pre style="font-family: monospace">')
+        assert html_body.endswith("</pre>")
+        assert "```" not in html_body  # no whatsapp fences in the email path
+        assert "DIRECT" in html_body
+        assert "480" in html_body
+
+    def test_html_escapes_unsafe_characters(self) -> None:
+        outcomes = [
+            cf.CandidateOutcome(
+                direct_row=None,
+                one_stop_row=None,
+                error_line="Delhi (DEL): error -- <script>&boom</script>",
+            )
+        ]
+
+        _subject, html_body = cf._build_email_body(outcomes)
+
+        assert "<script>" not in html_body
+        assert "&lt;script&gt;" in html_body
+        assert "&amp;boom" in html_body
+
+
 class TestMainSilenceRule:
+    """All these pin GITHUB_ACTIONS unset (-> whatsapp channel) unless
+    a test says otherwise -- the silence/notify/exit-code rules
+    themselves don't depend on which channel is active, so most tests
+    exercise the already-established whatsapp path and one dedicated
+    test below proves the email path gets picked and used correctly
+    too."""
+
     def test_all_candidates_no_data_yet_stays_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
         def _raise(**_: object) -> None:
             raise core.NoFlightsFoundYet("no data yet")
 
@@ -299,6 +373,7 @@ class TestMainSilenceRule:
     def test_one_candidate_direct_only_still_notifies(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
         priced_id = cf.CANDIDATES[0][0]
 
         def _fake_fetch(*, arrival_id: str, **_: object) -> list[dict[str, object]]:
@@ -324,6 +399,7 @@ class TestMainSilenceRule:
         """The exact case the module docstring warns about: an error
         outcome must never be masked by another candidate's routine
         no-data outcome, and must make the whole run exit 1."""
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
         erroring_id = cf.CANDIDATES[0][0]
 
         def _fake_fetch(*, arrival_id: str, **_: object) -> list[dict[str, object]]:
@@ -347,6 +423,7 @@ class TestMainSilenceRule:
         """Proves the comparison genuinely covers every configured
         candidate in ONE message, not just the first/last one -- real at
         the actual 4-candidate scale, not just 2."""
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
 
         def _fake_fetch(*, arrival_id: str, **_: object) -> list[dict[str, object]]:
             return [{**_DIRECT_ITINERARY, "price": float(len(arrival_id) * 100)}]
@@ -361,3 +438,41 @@ class TestMainSilenceRule:
         assert len(sent) == 1
         for arrival_id, _label in cf.CANDIDATES:
             assert arrival_id in sent[0]
+
+    def test_github_actions_env_routes_to_email_instead(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        priced_id = cf.CANDIDATES[0][0]
+
+        def _fake_fetch(*, arrival_id: str, **_: object) -> list[dict[str, object]]:
+            if arrival_id == priced_id:
+                return [_DIRECT_ITINERARY]
+            raise core.NoFlightsFoundYet("no data yet")
+
+        monkeypatch.setattr(cf, "fetch_all_itineraries", _fake_fetch)
+        whatsapp_sent: list[str] = []
+        email_sent: list[tuple[str, str]] = []
+        monkeypatch.setattr(cf, "send_whatsapp", whatsapp_sent.append)
+        monkeypatch.setattr(
+            cf, "send_email", lambda subject, body: email_sent.append((subject, body))
+        )
+
+        exit_code = cf.main()
+
+        assert exit_code == 0
+        assert whatsapp_sent == []
+        assert len(email_sent) == 1
+        subject, body = email_sent[0]
+        assert subject == f"Flight watch: {cf.DEPARTURE_ID} on {cf.OUTBOUND_DATE}"
+        assert "480" in body
+
+    def test_invalid_notify_channel_fails_fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FLIGHT_NOTIFY_CHANNEL", "carrier-pigeon")
+        called = []
+        monkeypatch.setattr(cf, "fetch_all_itineraries", lambda **_: called.append(1))
+
+        exit_code = cf.main()
+
+        assert exit_code == 1
+        assert called == []  # fails before ever querying SerpApi

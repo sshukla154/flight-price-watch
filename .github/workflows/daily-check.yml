@@ -24,11 +24,19 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Compare candidate destinations and notify WhatsApp
+      - name: Compare candidate destinations and notify
         env:
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          # CallMeBot's WhatsApp API blocks GitHub Actions' shared runner
+          # IP ranges -- confirmed by testing the same key/phone from a
+          # home network, where it works fine. check_flights.py's
+          # _notify_channel() always picks email here since GITHUB_ACTIONS
+          # is set automatically in every job; CALLMEBOT_* above are kept
+          # only so this workflow still works if that ever changes.
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           # Guarded on event_name -- the `inputs` context is only meaningful
           # for a workflow_dispatch trigger; the daily `schedule` trigger
           # must never depend on it existing.

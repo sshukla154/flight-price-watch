@@ -1,5 +1,5 @@
 """Daily AMS -> {candidate Indian destinations} price comparison, pushed
-to WhatsApp as two sections: DIRECT and 1-STOP (max).
+as two sections: DIRECT and 1-STOP (max).
 
 Candidates and route/date come from routes.toml's [check_flights] section
 (see load_route_config in flightwatch_core.py) -- edit that file to add,
@@ -24,12 +24,18 @@ destination is an explicit, tracked v2 TODO -- see README -- not built
 here; it would need real distance/time/cost data this script does not
 have.
 
-Same three secrets as before (SERPAPI_KEY, CALLMEBOT_PHONE,
-CALLMEBOT_APIKEY) -- no new secrets needed.
+Notification channel is picked automatically by _notify_channel():
+GitHub Actions (which sets GITHUB_ACTIONS=true in every job) always
+gets email, since CallMeBot's free WhatsApp API blocks GitHub's shared
+runner IP ranges -- confirmed by testing the same key/phone from a home
+network, where it works fine. Running locally (GITHUB_ACTIONS unset)
+defaults to WhatsApp. FLIGHT_NOTIFY_CHANNEL overrides either way, for
+testing. See README's "Notification channel" section.
 """
 
 from __future__ import annotations
 
+import html
 import os
 import sys
 from dataclasses import dataclass
@@ -40,6 +46,7 @@ from flightwatch_core import (
     NoFlightsFoundYet,
     fetch_all_itineraries,
     load_route_config,
+    send_email,
     send_whatsapp,
 )
 
@@ -190,12 +197,30 @@ def _check_one(arrival_id: str, label: str) -> CandidateOutcome:
     return CandidateOutcome(direct_row=direct_row, one_stop_row=one_stop_row, error_line=None)
 
 
-def _build_message(outcomes: list[CandidateOutcome]) -> str:
+def _notify_channel() -> str:
+    """"email" on GitHub Actions (GITHUB_ACTIONS=true, set automatically
+    in every job -- CallMeBot blocks that IP range), "whatsapp"
+    otherwise (a home network works fine). FLIGHT_NOTIFY_CHANNEL
+    overrides either way, for testing."""
+    return os.environ.get("FLIGHT_NOTIFY_CHANNEL") or (
+        "email" if os.environ.get("GITHUB_ACTIONS") == "true" else "whatsapp"
+    )
+
+
+def _build_sections(
+    outcomes: list[CandidateOutcome],
+) -> tuple[str, list[tuple[str, str]], list[str]]:
+    """Channel-neutral report content: the top summary line, a list of
+    (section header, table text) pairs -- table text has no fence/HTML
+    wrapping, that's each channel's own job -- and the plain error
+    lines (errors are never tabular)."""
     direct_rows = [o.direct_row for o in outcomes if o.direct_row is not None]
     one_stop_rows = [o.one_stop_row for o in outcomes if o.one_stop_row is not None]
     error_lines = [o.error_line for o in outcomes if o.error_line is not None]
 
-    sections = [f"Flight watch from {DEPARTURE_ID} on {OUTBOUND_DATE} ({CURRENCY})"]
+    top_line = f"Flight watch from {DEPARTURE_ID} on {OUTBOUND_DATE} ({CURRENCY})"
+
+    tables: list[tuple[str, str]] = []
     if direct_rows:
         table = _format_table(
             ["Airport", "Price", "Airline", "Dep", "Arr", "Total"],
@@ -204,7 +229,7 @@ def _build_message(outcomes: list[CandidateOutcome]) -> str:
                 for r in direct_rows
             ],
         )
-        sections.append(f"\nDIRECT\n```\n{table}\n```")
+        tables.append(("DIRECT", table))
     if one_stop_rows:
         table = _format_table(
             ["Airport", "Price", "Airline", "Dep", "Arr", "Transit", "Total"],
@@ -213,13 +238,48 @@ def _build_message(outcomes: list[CandidateOutcome]) -> str:
                 for r in one_stop_rows
             ],
         )
-        sections.append(f"\n1 STOP (max)\n```\n{table}\n```")
+        tables.append(("1 STOP (max)", table))
+
+    return top_line, tables, error_lines
+
+
+def _build_whatsapp_message(outcomes: list[CandidateOutcome]) -> str:
+    """WhatsApp has no real markdown table support -- each table is
+    wrapped in a ``` fence, the only way to force a monospace font
+    there."""
+    top_line, tables, error_lines = _build_sections(outcomes)
+    sections = [top_line]
+    for header, table in tables:
+        sections.append(f"\n{header}\n```\n{table}\n```")
     if error_lines:
         sections.append("\nERRORS\n" + "\n".join(error_lines))
     return "\n".join(sections)
 
 
+def _build_email_body(outcomes: list[CandidateOutcome]) -> tuple[str, str]:
+    """Gmail's plain-text view uses a proportional font that would
+    misalign the raw table, so this sends HTML with a <pre> block
+    instead -- no ``` fences needed, <pre> already forces monospace.
+    Returns (subject, html_body)."""
+    top_line, tables, error_lines = _build_sections(outcomes)
+    sections = [top_line]
+    for header, table in tables:
+        sections.append(f"\n{header}\n{table}")
+    if error_lines:
+        sections.append("\nERRORS\n" + "\n".join(error_lines))
+    text = "\n".join(sections)
+
+    subject = f"Flight watch: {DEPARTURE_ID} on {OUTBOUND_DATE}"
+    html_body = f'<pre style="font-family: monospace">{html.escape(text)}</pre>'
+    return subject, html_body
+
+
 def main() -> int:
+    channel = _notify_channel()
+    if channel not in ("whatsapp", "email"):
+        print(f"Unknown FLIGHT_NOTIFY_CHANNEL '{channel}'", file=sys.stderr)
+        return 1
+
     outcomes = [_check_one(arrival_id, label) for arrival_id, label in CANDIDATES]
 
     has_any_finding = any(
@@ -227,17 +287,23 @@ def main() -> int:
         for o in outcomes
     )
     if not has_any_finding:
-        # Deliberately silent on WhatsApp -- every candidate having
-        # nothing useful to report (no data yet, or only 2+-stop options)
-        # is the routine outcome for a far-future date, not worth a daily
+        # Deliberately silent -- every candidate having nothing useful
+        # to report (no data yet, or only 2+-stop options) is the
+        # routine outcome for a far-future date, not worth a daily
         # ping. A genuine error is NOT covered by this branch -- it's
         # exactly one of the three fields has_any_finding checks.
-        print("(no WhatsApp sent, nothing to report for any candidate)", file=sys.stderr)
+        print("(nothing to report for any candidate, no notification sent)", file=sys.stderr)
         return 0
 
-    message = _build_message(outcomes)
-    print(message)
-    send_whatsapp(message)
+    if channel == "whatsapp":
+        message = _build_whatsapp_message(outcomes)
+        print(message)
+        send_whatsapp(message)
+    else:
+        subject, html_body = _build_email_body(outcomes)
+        print(subject)
+        print(html_body)
+        send_email(subject, html_body)
 
     # A genuine error on ANY candidate must make the whole run exit 1 --
     # matches this repo's own established discipline (exit 1 only for a
