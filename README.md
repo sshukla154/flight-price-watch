@@ -1,9 +1,10 @@
 # flight-price-watch
 
-One daily check, pushing a notification: compares the cheapest AMS
-one-way fare to several candidate Indian destination airports, on a
-fixed date. Notification channel picks itself based on where the
-script runs — see "Notification channel" below.
+One daily check, pushing a notification: compares the best AMS one-way
+option (price, time, and layover combined — not cheapest alone) to
+several candidate Indian destination airports, on a fixed date.
+Notification channel picks itself based on where the script runs —
+see "Notification channel" below.
 
 ## How it works
 
@@ -13,13 +14,25 @@ script runs — see "Notification channel" below.
 2. For each candidate airport in `routes.toml`'s `[check_flights]`
    section, it queries [SerpApi's Google Flights API](https://serpapi.com/google-flights-api)
    **once** for every one-way fare from AMS on the configured date, then
-   locally splits the results into the cheapest **direct** option and
-   (for hub candidates only — see below) the cheapest **1-stop (max)**
-   option — one search per candidate either way, never two, to stay
-   inside the monthly search budget.
+   locally splits the results into the best-scored **direct** option
+   and (for hub candidates only — see below) the best-scored **1-stop
+   (max)** option — one search per candidate either way, never two, to
+   stay inside the monthly search budget.
+
+   "Best" is not "cheapest": `_itinerary_score` in `check_flights.py`
+   combines price with a time-value weight on total duration
+   (`_TIME_VALUE_PER_HOUR`, EUR/hour) plus an EXTRA weight on layover
+   time specifically (`_LAYOVER_PENALTY_PER_HOUR`) — a long layover is
+   penalized twice (once as part of total duration, once again on its
+   own), because sitting in an airport is worse than the same time
+   spent flying. Both are simple, transparent constants (currently 15
+   EUR/hour each), not fitted to any real preference data — adjust
+   them directly in the source if a real pick ever looks wrong. Lower
+   score wins; the table still shows the itinerary's real price, so
+   you can always see what "best" traded off against "cheapest."
 3. It builds a report with two sections — `DIRECT` and `1 STOP (max)`
    — each a monospace table listing every candidate that has an option
-   in that category (cheapest-per-airport, not sorted by price across
+   in that category (best-scored per airport, not sorted across
    airports), with airline, departure/arrival local time, transit
    (layover) time, and total duration. A candidate with nothing in a
    category is simply omitted from that section, e.g.:
@@ -305,10 +318,11 @@ instead.
 - Rotating through more origins (`flight-agent`'s own 10-airport list
   near Nieuwegein) — no real decision rule exists for this yet.
 - **Ground-travel-aware "best" scoring** (explicitly requested by the
-  user, tracked here rather than forgotten): today "best" means cheapest
-  price only. A real v2 would factor in actual ground travel time/cost
-  from whichever candidate airport wins to the traveller's real final
-  destination, mirroring `flight-agent`'s own D7 formula
+  user, partially done): `_itinerary_score` already factors in flight
+  price, total travel time, and layover time (see "How it works"
+  above) — what's still missing is the GROUND leg: actual travel
+  time/cost from whichever candidate airport wins to the traveller's
+  real final destination, mirroring `flight-agent`'s own D7 formula
   (`total_journey_score = adjusted_score + ground_cost_component + ground_time_component`)
   — needs real distance/time/cost data per candidate, which doesn't
   exist anywhere in this repo yet.

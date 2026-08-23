@@ -18,11 +18,12 @@ stop"). If an airport has no option in a given category, that airport
 is simply omitted from that section -- never an explicit "not found"
 line.
 
-Cheapest-price-only for now (per category). Factoring in ground travel
-time/cost from whichever candidate wins to the traveller's actual final
-destination is an explicit, tracked v2 TODO -- see README -- not built
-here; it would need real distance/time/cost data this script does not
-have.
+Each category's row is the best-SCORED itinerary, not the cheapest --
+see _itinerary_score, which weighs price against total travel time and
+layover time. Factoring in ground travel time/cost from whichever
+candidate wins to the traveller's actual final destination is a
+separate, still-unbuilt v2 TODO -- see README -- it would need real
+distance/time/cost data this script does not have.
 
 Notification channel is picked automatically by _notify_channel():
 GitHub Actions (which sets GITHUB_ACTIONS=true in every job) always
@@ -100,19 +101,42 @@ class CandidateOutcome:
     error_line: str | None
 
 
+_TIME_VALUE_PER_HOUR = 15  # EUR/hour equivalent weight on total travel time
+_LAYOVER_PENALTY_PER_HOUR = 15  # EUR/hour EXTRA weight specifically on layover time
+
+
+def _itinerary_score(itinerary: dict[str, Any]) -> float:
+    """Lower is better. price + a time-value-weighted total duration +
+    an EXTRA penalty on layover time specifically. Layover minutes are
+    deliberately counted TWICE -- once already inside total_duration,
+    once again here -- because sitting in an airport is worse than the
+    same time spent flying, and this is the one place that distinction
+    matters. Both weights are simple, transparent EUR-per-hour
+    constants, not fitted to any real preference data -- adjust them
+    if a real pick ever looks wrong."""
+    layover_minutes = sum(layover["duration"] for layover in itinerary.get("layovers") or [])
+    return (
+        itinerary["price"]
+        + (itinerary["total_duration"] / 60) * _TIME_VALUE_PER_HOUR
+        + (layover_minutes / 60) * _LAYOVER_PENALTY_PER_HOUR
+    )
+
+
 def _best_by_stop_category(
     itineraries: list[dict[str, Any]],
 ) -> dict[int, dict[str, Any]]:
-    """Cheapest itinerary per stop count, keeping only 0 (direct) and 1
-    (one-stop) -- anything with 2+ stops is out of scope and dropped
-    here, not carried forward for a caller to filter out again."""
+    """Best-scored itinerary per stop count (see _itinerary_score --
+    price, total time, and layover time combined, not price alone),
+    keeping only 0 (direct) and 1 (one-stop) -- anything with 2+ stops
+    is out of scope and dropped here, not carried forward for a caller
+    to filter out again."""
     best: dict[int, dict[str, Any]] = {}
     for itinerary in itineraries:
         stop_count = len(itinerary["flights"]) - 1
         if stop_count not in (_DIRECT, _ONE_STOP):
             continue
         current_best = best.get(stop_count)
-        if current_best is None or itinerary["price"] < current_best["price"]:
+        if current_best is None or _itinerary_score(itinerary) < _itinerary_score(current_best):
             best[stop_count] = itinerary
     return best
 

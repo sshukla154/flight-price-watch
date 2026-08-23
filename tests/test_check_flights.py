@@ -62,8 +62,26 @@ _TWO_STOP_ITINERARY = {
 }
 
 
+class TestItineraryScore:
+    def test_direct_itinerary_has_no_layover_term(self) -> None:
+        # _DIRECT_ITINERARY: price=480, total_duration=735 (12h15m), no layovers
+        expected = 480 + (735 / 60) * cf._TIME_VALUE_PER_HOUR
+        assert cf._itinerary_score(_DIRECT_ITINERARY) == pytest.approx(expected)
+
+    def test_one_stop_itinerary_counts_layover_twice(self) -> None:
+        # _ONE_STOP_ITINERARY: price=356, total_duration=915 (15h15m),
+        # layover=90min (1h30m) -- counted once inside total_duration,
+        # once again as its own penalty term.
+        expected = (
+            356
+            + (915 / 60) * cf._TIME_VALUE_PER_HOUR
+            + (90 / 60) * cf._LAYOVER_PENALTY_PER_HOUR
+        )
+        assert cf._itinerary_score(_ONE_STOP_ITINERARY) == pytest.approx(expected)
+
+
 class TestBestByStopCategory:
-    def test_picks_cheapest_direct_and_cheapest_one_stop_independently(self) -> None:
+    def test_picks_best_direct_and_best_one_stop_independently(self) -> None:
         pricier_direct = {**_DIRECT_ITINERARY, "price": 900}
         itineraries = [pricier_direct, _DIRECT_ITINERARY, _ONE_STOP_ITINERARY]
 
@@ -83,6 +101,28 @@ class TestBestByStopCategory:
 
         assert cf._DIRECT not in best
         assert cf._ONE_STOP in best
+
+    def test_cheaper_but_much_longer_and_layover_heavy_loses_to_faster_pricier(self) -> None:
+        """The actual behavior change: "best" is no longer "cheapest."
+        A cheap itinerary with a huge layover (mirrors real BOM data
+        seen live this session: price=860, total=33h30m, layover
+        23h10m) should lose to a pricier-but-much-faster option."""
+        cheap_but_slow = {
+            "price": 300,
+            "flights": [{"airline": "X"}, {"airline": "X"}],
+            "layovers": [{"duration": 1200, "name": "Somewhere", "id": "XXX"}],  # 20h layover
+            "total_duration": 2000,  # ~33.3h
+        }
+        pricier_but_fast = {
+            "price": 500,
+            "flights": [{"airline": "Y"}, {"airline": "Y"}],
+            "layovers": [{"duration": 60, "name": "Elsewhere", "id": "YYY"}],  # 1h layover
+            "total_duration": 600,  # 10h
+        }
+
+        best = cf._best_by_stop_category([cheap_but_slow, pricier_but_fast])
+
+        assert best[cf._ONE_STOP]["price"] == 500
 
 
 class TestTimeOfDay:
