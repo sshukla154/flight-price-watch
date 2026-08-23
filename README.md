@@ -24,7 +24,7 @@ script runs — see "Notification channel" below.
    category is simply omitted from that section, e.g.:
 
    ```
-   Flight watch from AMS on 2027-07-17 (EUR)
+   Flight watch from AMS on 2027-07-17 (EUR) -- 2 adults + 1 child
 
    DIRECT
    Airport  Price  Airline  Dep    Arr      Total
@@ -35,7 +35,18 @@ script runs — see "Notification channel" below.
    Airport  Price  Airline   Dep    Arr      Transit  Total
    -------  -----  --------  -----  -------  -------  ------
    VNS         356  Oman Air  10:15  06:30+1  1h30m    15h15m
+
+   Varanasi (VNS) via Muscat (MCT): AMS->MCT 3h00m, layover 1h30m, MCT->VNS 10h45m
    ```
+
+   The 1-STOP table is followed by a per-candidate leg breakdown line
+   like the one above -- the stopover's own name/code, the AMS-to-
+   stopover leg duration, the layover, and the stopover-to-destination
+   leg duration (all three sum to the table's own Total column). Note:
+   SerpApi's Google Flights data has no field distinguishing a self-
+   transfer (separate tickets, re-check-in required) from a protected
+   through-connection -- checked their docs directly, it just isn't
+   there, so this breakdown deliberately doesn't claim to show it.
 
    Sent via **email or WhatsApp depending on where the script runs**
    (see "Notification channel" below) — but only if at least one
@@ -89,6 +100,7 @@ airports — no Python edit needed. Quick reference:
 | From location (departure airport) | `departure_id` | `"AMS"` |
 | To location(s) (destination airports compared) | `candidates` | add/remove `{ id = "...", label = "..." }` entries |
 | Date of travel | `outbound_date` | `"2027-07-17"` |
+| Passengers | `adults` / `children` | `2` / `1` — headcount only, SerpApi has no age field (a 7-year-old is just `children = 1`) |
 
 Edit the value(s), commit, push — the next scheduled run (or a manual
 `workflow_dispatch`) picks it up automatically.
@@ -98,6 +110,8 @@ Edit the value(s), commit, push — the next scheduled run (or a manual
 departure_id = "AMS"
 outbound_date = "2027-07-17"
 currency = "EUR"
+adults = 2
+children = 1
 candidates = [
     { id = "DEL", label = "Delhi" },
     { id = "VNS", label = "Varanasi" },
@@ -106,8 +120,9 @@ candidates = [
 ]
 ```
 
-`FLIGHT_DEPARTURE_ID` / `FLIGHT_OUTBOUND_DATE` / `FLIGHT_CURRENCY`
-environment variables still override these for one-off diagnostic runs
+`FLIGHT_DEPARTURE_ID` / `FLIGHT_OUTBOUND_DATE` / `FLIGHT_CURRENCY` /
+`FLIGHT_ADULTS` / `FLIGHT_CHILDREN` environment variables still
+override these for one-off diagnostic runs
 (e.g. `workflow_dispatch` with a near-term test date) — precedence is
 env var > `routes.toml`. There's no per-run override for the candidate
 list itself; edit `routes.toml` and commit for that.
@@ -234,15 +249,6 @@ instead.
 
 ## Possible v2 (not built, deliberately)
 
-- **Multi-passenger pricing (2 adults + 1 child, age 7)** — SerpApi's
-  Google Flights API supports `adults` / `children` /
-  `infants_in_seat` / `infants_on_lap` params (verified live against
-  SerpApi's own docs, 2026-08-21); headcount only, no age field exists,
-  so a 7-year-old is just `children=1`. Today's queries pass none of
-  these (SerpApi defaults to `adults=1`) — every price shown right now
-  is a single-adult fare, not the real 3-person fare the user actually
-  needs. Not yet implemented: `fetch_all_itineraries` and `routes.toml`
-  would both need new fields.
 - **Multiple dates / date range** — SerpApi's Google Flights API has
   no calendar/cheapest-dates feature (verified live, 2026-08-21):
   `outbound_date` accepts exactly one fixed date per call, always. A

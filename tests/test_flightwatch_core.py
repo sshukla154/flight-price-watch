@@ -33,6 +33,8 @@ class TestLoadRouteConfig:
         assert config["departure_id"] == "AMS"
         assert config["outbound_date"] == "2027-07-17"
         assert config["currency"] == "EUR"
+        assert config["adults"] == 2
+        assert config["children"] == 1
         assert config["candidates"] == [
             {"id": "DEL", "label": "Delhi"},
             {"id": "VNS", "label": "Varanasi"},
@@ -112,6 +114,29 @@ class TestFetchAllItineraries:
                 )
         assert not isinstance(exc_info.value, core.NoFlightsFoundYet)
 
+    def test_adults_and_children_pass_through_to_the_request(self) -> None:
+        with requests_mock.Mocker() as mock:
+            mock.get(core.SERPAPI_URL, json=_SUCCESS_RESPONSE_TWO_OFFERS)
+            core.fetch_all_itineraries(
+                departure_id="AMS",
+                arrival_id="DEL",
+                outbound_date="2027-07-17",
+                currency="EUR",
+                adults=2,
+                children=1,
+            )
+        assert mock.last_request.qs["adults"] == ["2"]
+        assert mock.last_request.qs["children"] == ["1"]
+
+    def test_defaults_to_one_adult_zero_children_when_omitted(self) -> None:
+        with requests_mock.Mocker() as mock:
+            mock.get(core.SERPAPI_URL, json=_SUCCESS_RESPONSE_TWO_OFFERS)
+            core.fetch_all_itineraries(
+                departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
+            )
+        assert mock.last_request.qs["adults"] == ["1"]
+        assert mock.last_request.qs["children"] == ["0"]
+
 
 class TestFetchCheapestPrice:
     def test_picks_the_cheapest_across_best_and_other_flights(self) -> None:
@@ -167,6 +192,20 @@ class TestFetchCheapestPrice:
             core.fetch_cheapest_price(
                 departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
             )
+
+    def test_forwards_adults_and_children_to_fetch_all_itineraries(self) -> None:
+        with requests_mock.Mocker() as mock:
+            mock.get(core.SERPAPI_URL, json=_SUCCESS_RESPONSE_TWO_OFFERS)
+            core.fetch_cheapest_price(
+                departure_id="AMS",
+                arrival_id="DEL",
+                outbound_date="2027-07-17",
+                currency="EUR",
+                adults=2,
+                children=1,
+            )
+        assert mock.last_request.qs["adults"] == ["2"]
+        assert mock.last_request.qs["children"] == ["1"]
 
 
 class TestSendWhatsapp:

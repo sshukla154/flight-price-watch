@@ -59,6 +59,8 @@ _CONFIG = load_route_config("check_flights")
 DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or _CONFIG["departure_id"]
 OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or _CONFIG["outbound_date"]
 CURRENCY = os.environ.get("FLIGHT_CURRENCY") or _CONFIG["currency"]
+ADULTS = int(os.environ.get("FLIGHT_ADULTS") or _CONFIG["adults"])
+CHILDREN = int(os.environ.get("FLIGHT_CHILDREN") or _CONFIG["children"])
 
 CANDIDATES = tuple((c["id"], c["label"]) for c in _CONFIG["candidates"])
 
@@ -69,12 +71,17 @@ _ONE_STOP = 1
 @dataclass(frozen=True)
 class CategoryRow:
     airport: str
+    label: str
     price: str
     airline: str
     departure: str
     arrival: str
     total: str
     transit: str | None
+    stop_id: str | None = None
+    stop_name: str | None = None
+    leg1_duration: str | None = None
+    leg2_duration: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,7 +121,7 @@ def _time_of_day(departure_timestamp: str, timestamp: str) -> str:
     return f"{time_of_day}+1" if date != departure_date else time_of_day
 
 
-def _row_from_itinerary(arrival_id: str, itinerary: dict[str, Any]) -> CategoryRow:
+def _row_from_itinerary(label: str, arrival_id: str, itinerary: dict[str, Any]) -> CategoryRow:
     flights = itinerary["flights"]
     airlines = ", ".join(dict.fromkeys(leg["airline"] for leg in flights))
     departure_timestamp = flights[0]["departure_airport"]["time"]
@@ -124,20 +131,37 @@ def _row_from_itinerary(arrival_id: str, itinerary: dict[str, Any]) -> CategoryR
     hours, minutes = divmod(itinerary["total_duration"], 60)
 
     transit: str | None = None
+    stop_id: str | None = None
+    stop_name: str | None = None
+    leg1_duration: str | None = None
+    leg2_duration: str | None = None
     layovers = itinerary.get("layovers") or []
     if layovers:
         layover_minutes = sum(layover["duration"] for layover in layovers)
         transit_hours, transit_minutes = divmod(layover_minutes, 60)
         transit = f"{transit_hours}h{transit_minutes:02d}m"
 
+        stop = layovers[0]
+        stop_id = stop["id"]
+        stop_name = stop["name"]
+        leg1_hours, leg1_minutes = divmod(flights[0]["duration"], 60)
+        leg1_duration = f"{leg1_hours}h{leg1_minutes:02d}m"
+        leg2_hours, leg2_minutes = divmod(flights[1]["duration"], 60)
+        leg2_duration = f"{leg2_hours}h{leg2_minutes:02d}m"
+
     return CategoryRow(
         airport=arrival_id,
+        label=label,
         price=str(itinerary["price"]),
         airline=airlines,
         departure=departure_time,
         arrival=arrival_time,
         total=f"{hours}h{minutes:02d}m",
         transit=transit,
+        stop_id=stop_id,
+        stop_name=stop_name,
+        leg1_duration=leg1_duration,
+        leg2_duration=leg2_duration,
     )
 
 
@@ -166,6 +190,17 @@ def _format_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+def _format_one_stop_detail(row: CategoryRow) -> str:
+    """Readable per-leg breakdown for a one-stop candidate -- reuses
+    row.transit (already computed) rather than recalculating the
+    layover duration a second time."""
+    return (
+        f"{row.label} ({row.airport}) via {row.stop_name} ({row.stop_id}): "
+        f"{DEPARTURE_ID}->{row.stop_id} {row.leg1_duration}, layover {row.transit}, "
+        f"{row.stop_id}->{row.airport} {row.leg2_duration}"
+    )
+
+
 def _check_one(arrival_id: str, label: str) -> CandidateOutcome:
     """One candidate's outcome across both categories. Never raises --
     every exception fetch_all_itineraries can produce is caught HERE,
@@ -177,6 +212,8 @@ def _check_one(arrival_id: str, label: str) -> CandidateOutcome:
             arrival_id=arrival_id,
             outbound_date=OUTBOUND_DATE,
             currency=CURRENCY,
+            adults=ADULTS,
+            children=CHILDREN,
         )
     except NoFlightsFoundYet:
         return CandidateOutcome(direct_row=None, one_stop_row=None, error_line=None)
@@ -188,8 +225,12 @@ def _check_one(arrival_id: str, label: str) -> CandidateOutcome:
         )
 
     best = _best_by_stop_category(itineraries)
-    direct_row = _row_from_itinerary(arrival_id, best[_DIRECT]) if _DIRECT in best else None
-    one_stop_row = _row_from_itinerary(arrival_id, best[_ONE_STOP]) if _ONE_STOP in best else None
+    direct_row = (
+        _row_from_itinerary(label, arrival_id, best[_DIRECT]) if _DIRECT in best else None
+    )
+    one_stop_row = (
+        _row_from_itinerary(label, arrival_id, best[_ONE_STOP]) if _ONE_STOP in best else None
+    )
     # best may legitimately be empty (every itinerary SerpApi returned had
     # 2+ stops) -- that's the same "nothing useful to report" situation as
     # NoFlightsFoundYet from this script's own point of view, handled
@@ -207,6 +248,16 @@ def _notify_channel() -> str:
     )
 
 
+def _passenger_summary() -> str:
+    """"2 adults + 1 child" (or just "1 adult") -- always shown in the
+    report so the price's passenger count is unambiguous regardless of
+    whether SerpApi returns a total-for-party or a per-adult figure."""
+    parts = [f"{ADULTS} adult{'s' if ADULTS != 1 else ''}"]
+    if CHILDREN:
+        parts.append(f"{CHILDREN} child{'ren' if CHILDREN != 1 else ''}")
+    return " + ".join(parts)
+
+
 def _build_sections(
     outcomes: list[CandidateOutcome],
 ) -> tuple[str, list[tuple[str, str]], list[str]]:
@@ -218,7 +269,10 @@ def _build_sections(
     one_stop_rows = [o.one_stop_row for o in outcomes if o.one_stop_row is not None]
     error_lines = [o.error_line for o in outcomes if o.error_line is not None]
 
-    top_line = f"Flight watch from {DEPARTURE_ID} on {OUTBOUND_DATE} ({CURRENCY})"
+    top_line = (
+        f"Flight watch from {DEPARTURE_ID} on {OUTBOUND_DATE} ({CURRENCY}) -- "
+        f"{_passenger_summary()}"
+    )
 
     tables: list[tuple[str, str]] = []
     if direct_rows:
@@ -238,7 +292,8 @@ def _build_sections(
                 for r in one_stop_rows
             ],
         )
-        tables.append(("1 STOP (max)", table))
+        detail = "\n".join(_format_one_stop_detail(r) for r in one_stop_rows)
+        tables.append(("1 STOP (max)", f"{table}\n\n{detail}"))
 
     return top_line, tables, error_lines
 

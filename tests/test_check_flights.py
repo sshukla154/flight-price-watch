@@ -39,11 +39,13 @@ _ONE_STOP_ITINERARY = {
             "airline": "Oman Air",
             "departure_airport": {"time": "2027-07-17 10:15"},
             "arrival_airport": {"time": "2027-07-17 15:00"},
+            "duration": 180,
         },
         {
             "airline": "Oman Air",
             "departure_airport": {"time": "2027-07-17 16:30"},
             "arrival_airport": {"time": "2027-07-18 06:30"},
+            "duration": 645,
         },
     ],
     "layovers": [{"duration": 90, "name": "Muscat", "id": "MCT"}],
@@ -89,11 +91,12 @@ class TestTimeOfDay:
 
 
 class TestRowFromItinerary:
-    def test_direct_row_has_no_transit(self) -> None:
-        row = cf._row_from_itinerary("DEL", _DIRECT_ITINERARY)
+    def test_direct_row_has_no_transit_or_stop_detail(self) -> None:
+        row = cf._row_from_itinerary("Delhi", "DEL", _DIRECT_ITINERARY)
 
         assert row == cf.CategoryRow(
             airport="DEL",
+            label="Delhi",
             price="480",
             airline="KLM",
             departure="09:15",
@@ -101,23 +104,66 @@ class TestRowFromItinerary:
             total="12h15m",
             transit=None,
         )
+        assert row.stop_id is None
+        assert row.stop_name is None
+        assert row.leg1_duration is None
+        assert row.leg2_duration is None
 
     def test_one_stop_row_includes_transit_and_day_rollover(self) -> None:
-        row = cf._row_from_itinerary("VNS", _ONE_STOP_ITINERARY)
+        row = cf._row_from_itinerary("Varanasi", "VNS", _ONE_STOP_ITINERARY)
 
         assert row == cf.CategoryRow(
             airport="VNS",
+            label="Varanasi",
             price="356",
             airline="Oman Air",
             departure="10:15",
             arrival="06:30+1",
             total="15h15m",
             transit="1h30m",
+            stop_id="MCT",
+            stop_name="Muscat",
+            leg1_duration="3h00m",
+            leg2_duration="10h45m",
         )
 
     def test_deduplicates_repeated_airline_across_segments(self) -> None:
-        row = cf._row_from_itinerary("VNS", _ONE_STOP_ITINERARY)
+        row = cf._row_from_itinerary("Varanasi", "VNS", _ONE_STOP_ITINERARY)
         assert row.airline == "Oman Air"  # not "Oman Air, Oman Air"
+
+
+class TestFormatOneStopDetail:
+    def test_exact_wording(self) -> None:
+        row = cf._row_from_itinerary("Varanasi", "VNS", _ONE_STOP_ITINERARY)
+
+        line = cf._format_one_stop_detail(row)
+
+        assert line == (
+            f"Varanasi (VNS) via Muscat (MCT): {cf.DEPARTURE_ID}->MCT 3h00m, "
+            "layover 1h30m, MCT->VNS 10h45m"
+        )
+
+
+class TestPassengerSummary:
+    def test_single_adult_no_children(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cf, "ADULTS", 1)
+        monkeypatch.setattr(cf, "CHILDREN", 0)
+        assert cf._passenger_summary() == "1 adult"
+
+    def test_multiple_adults_no_children(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cf, "ADULTS", 2)
+        monkeypatch.setattr(cf, "CHILDREN", 0)
+        assert cf._passenger_summary() == "2 adults"
+
+    def test_adults_and_one_child(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cf, "ADULTS", 2)
+        monkeypatch.setattr(cf, "CHILDREN", 1)
+        assert cf._passenger_summary() == "2 adults + 1 child"
+
+    def test_adults_and_multiple_children(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cf, "ADULTS", 2)
+        monkeypatch.setattr(cf, "CHILDREN", 3)
+        assert cf._passenger_summary() == "2 adults + 3 children"
 
 
 class TestFormatTable:
@@ -229,6 +275,7 @@ class TestBuildWhatsappMessage:
             cf.CandidateOutcome(
                 direct_row=cf.CategoryRow(
                     airport="DEL",
+                    label="Delhi",
                     price="480",
                     airline="KLM",
                     departure="09:15",
@@ -253,6 +300,7 @@ class TestBuildWhatsappMessage:
             cf.CandidateOutcome(
                 direct_row=cf.CategoryRow(
                     airport="DEL",
+                    label="Delhi",
                     price="480",
                     airline="KLM",
                     departure="09:15",
@@ -273,6 +321,7 @@ class TestBuildWhatsappMessage:
     def test_all_three_sections_appear_when_populated(self) -> None:
         direct_row = cf.CategoryRow(
             airport="DEL",
+            label="Delhi",
             price="480",
             airline="KLM",
             departure="09:15",
@@ -282,12 +331,17 @@ class TestBuildWhatsappMessage:
         )
         one_stop_row = cf.CategoryRow(
             airport="VNS",
+            label="Varanasi",
             price="364",
             airline="IndiGo",
             departure="20:35",
             arrival="20:00+1",
             total="19h55m",
             transit="8h00m",
+            stop_id="DXB",
+            stop_name="Dubai",
+            leg1_duration="3h00m",
+            leg2_duration="8h45m",
         )
         outcomes = [
             cf.CandidateOutcome(direct_row=direct_row, one_stop_row=None, error_line=None),
@@ -302,6 +356,11 @@ class TestBuildWhatsappMessage:
         assert "DIRECT" in message and "DEL" in message and "480" in message
         assert "1 STOP" in message and "VNS" in message and "364" in message
         assert "ERRORS" in message and "error -- boom" in message
+        # the per-candidate leg breakdown rides along inside the same
+        # fenced section, not just the summary table
+        assert "Varanasi (VNS) via Dubai (DXB)" in message
+        assert f"{cf.DEPARTURE_ID}->DXB 3h00m" in message
+        assert "DXB->VNS 8h45m" in message
 
 
 class TestBuildEmailBody:
@@ -310,6 +369,7 @@ class TestBuildEmailBody:
             cf.CandidateOutcome(
                 direct_row=cf.CategoryRow(
                     airport="DEL",
+                    label="Delhi",
                     price="480",
                     airline="KLM",
                     departure="09:15",
@@ -330,6 +390,32 @@ class TestBuildEmailBody:
         assert "```" not in html_body  # no whatsapp fences in the email path
         assert "DIRECT" in html_body
         assert "480" in html_body
+
+    def test_one_stop_detail_line_appears_in_body(self) -> None:
+        outcomes = [
+            cf.CandidateOutcome(
+                direct_row=None,
+                one_stop_row=cf.CategoryRow(
+                    airport="VNS",
+                    label="Varanasi",
+                    price="364",
+                    airline="IndiGo",
+                    departure="20:35",
+                    arrival="20:00+1",
+                    total="19h55m",
+                    transit="8h00m",
+                    stop_id="DXB",
+                    stop_name="Dubai",
+                    leg1_duration="3h00m",
+                    leg2_duration="8h45m",
+                ),
+                error_line=None,
+            )
+        ]
+
+        _subject, html_body = cf._build_email_body(outcomes)
+
+        assert "Varanasi (VNS) via Dubai (DXB)" in html_body
 
     def test_html_escapes_unsafe_characters(self) -> None:
         outcomes = [

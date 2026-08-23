@@ -83,7 +83,13 @@ def load_route_config(section: str) -> dict[str, Any]:
 
 
 def fetch_all_itineraries(
-    *, departure_id: str, arrival_id: str, outbound_date: str, currency: str
+    *,
+    departure_id: str,
+    arrival_id: str,
+    outbound_date: str,
+    currency: str,
+    adults: int = 1,
+    children: int = 0,
 ) -> list[dict[str, Any]]:
     """One SerpApi Google Flights query; returns EVERY itinerary from
     BOTH `best_flights` and `other_flights` -- Google Flights' own "best"
@@ -107,6 +113,8 @@ def fetch_all_itineraries(
             "outbound_date": outbound_date,
             "type": "2",  # one-way
             "currency": currency,
+            "adults": adults,
+            "children": children,
             "hl": "en",
             "api_key": _env("SERPAPI_KEY"),
         },
@@ -129,7 +137,13 @@ def fetch_all_itineraries(
 
 
 def fetch_cheapest_price(
-    *, departure_id: str, arrival_id: str, outbound_date: str, currency: str
+    *,
+    departure_id: str,
+    arrival_id: str,
+    outbound_date: str,
+    currency: str,
+    adults: int = 1,
+    children: int = 0,
 ) -> dict[str, Any]:
     """The single cheapest itinerary, regardless of stop count -- a thin
     wrapper over `fetch_all_itineraries` kept for callers (and existing
@@ -140,6 +154,8 @@ def fetch_cheapest_price(
         arrival_id=arrival_id,
         outbound_date=outbound_date,
         currency=currency,
+        adults=adults,
+        children=children,
     )
     return min(itineraries, key=lambda itinerary: itinerary["price"])
 
