@@ -31,22 +31,36 @@ script runs — see "Notification channel" below.
    -------  -----  -------  -----  -------  ------
    DEL         480  KLM      09:15  21:30    12h15m
 
+   Delhi (DEL): Baggage -- Checked baggage for a fee
+
    1 STOP (max)
    Airport  Price  Airline   Dep    Arr      Transit  Total
    -------  -----  --------  -----  -------  -------  ------
    VNS         356  Oman Air  10:15  06:30+1  1h30m    15h15m
 
-   Varanasi (VNS) via Muscat (MCT): AMS->MCT 3h00m, layover 1h30m, MCT->VNS 10h45m
+   Varanasi (VNS) via Muscat (MCT): AMS->MCT 3h00m, layover 1h30m, MCT->VNS 10h45m -- Baggage: AMS-MCT: Checked baggage for a fee; MCT-VNS: 1 free checked bag
    ```
 
-   The 1-STOP table is followed by a per-candidate leg breakdown line
-   like the one above -- the stopover's own name/code, the AMS-to-
-   stopover leg duration, the layover, and the stopover-to-destination
-   leg duration (all three sum to the table's own Total column). Note:
-   SerpApi's Google Flights data has no field distinguishing a self-
-   transfer (separate tickets, re-check-in required) from a protected
-   through-connection -- checked their docs directly, it just isn't
-   there, so this breakdown deliberately doesn't claim to show it.
+   Every candidate row is followed by its own detail line: for 1-STOP
+   that's the stopover's name/code plus the AMS-to-stopover leg
+   duration, the layover, and the stopover-to-destination leg duration
+   (all three sum to the table's own Total column); for DIRECT it's
+   just the baggage note. Two caveats on what SerpApi's Google Flights
+   data actually contains, both checked directly against their docs
+   rather than assumed:
+   - **No self-transfer field**: nothing distinguishes a self-transfer
+     (separate tickets, re-check-in required) from a protected
+     through-connection, so the 1-STOP breakdown doesn't claim to show
+     it.
+   - **Baggage is free text, not a structured field**: there's no bag
+     count or fee amount anywhere, only whatever sentence Google
+     Flights itself shows per flight leg (e.g. `"Checked baggage for a
+     fee"`, `"1 free checked bag"`) — surfaced as-is, filtered to lines
+     mentioning "bag". When a 1-STOP itinerary's two legs disagree
+     (different airline/fare per leg — a real, common case, exactly
+     the "surprise at booking" scenario this exists to catch), both
+     are shown, labeled by leg. `"not specified"` means no baggage-
+     related text was found at all, not that baggage is free.
 
    Sent via **email or WhatsApp depending on where the script runs**
    (see "Notification channel" below) — but only if at least one

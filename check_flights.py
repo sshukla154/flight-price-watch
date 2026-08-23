@@ -78,6 +78,7 @@ class CategoryRow:
     arrival: str
     total: str
     transit: str | None
+    baggage: str
     stop_id: str | None = None
     stop_name: str | None = None
     leg1_duration: str | None = None
@@ -121,6 +122,17 @@ def _time_of_day(departure_timestamp: str, timestamp: str) -> str:
     return f"{time_of_day}+1" if date != departure_date else time_of_day
 
 
+def _baggage_text_for_leg(flight: dict[str, Any]) -> str:
+    """Free-text baggage info for one flight leg -- SerpApi/Google
+    Flights has no structured bag-count or fee field anywhere, only
+    whatever sentence shows up in that leg's own `extensions` (mixed
+    in with unrelated text like legroom). "not specified" is returned
+    explicitly rather than an empty string, so "nothing useful found"
+    is never mistaken for "nothing to report"."""
+    bag_lines = [e for e in (flight.get("extensions") or []) if "bag" in e.lower()]
+    return ", ".join(bag_lines) if bag_lines else "not specified"
+
+
 def _row_from_itinerary(label: str, arrival_id: str, itinerary: dict[str, Any]) -> CategoryRow:
     flights = itinerary["flights"]
     airlines = ", ".join(dict.fromkeys(leg["airline"] for leg in flights))
@@ -149,6 +161,17 @@ def _row_from_itinerary(label: str, arrival_id: str, itinerary: dict[str, Any]) 
         leg2_hours, leg2_minutes = divmod(flights[1]["duration"], 60)
         leg2_duration = f"{leg2_hours}h{leg2_minutes:02d}m"
 
+    if len(flights) == 1:
+        baggage = _baggage_text_for_leg(flights[0])
+    else:
+        leg1_baggage = _baggage_text_for_leg(flights[0])
+        leg2_baggage = _baggage_text_for_leg(flights[1])
+        baggage = (
+            leg1_baggage
+            if leg1_baggage == leg2_baggage
+            else f"{DEPARTURE_ID}-{stop_id}: {leg1_baggage}; {stop_id}-{arrival_id}: {leg2_baggage}"
+        )
+
     return CategoryRow(
         airport=arrival_id,
         label=label,
@@ -158,6 +181,7 @@ def _row_from_itinerary(label: str, arrival_id: str, itinerary: dict[str, Any]) 
         arrival=arrival_time,
         total=f"{hours}h{minutes:02d}m",
         transit=transit,
+        baggage=baggage,
         stop_id=stop_id,
         stop_name=stop_name,
         leg1_duration=leg1_duration,
@@ -190,14 +214,17 @@ def _format_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
-def _format_one_stop_detail(row: CategoryRow) -> str:
-    """Readable per-leg breakdown for a one-stop candidate -- reuses
-    row.transit (already computed) rather than recalculating the
-    layover duration a second time."""
+def _format_row_detail(row: CategoryRow) -> str:
+    """Readable per-candidate detail line -- always includes baggage;
+    a one-stop row (row.stop_id is not None) also gets the per-leg
+    breakdown, reusing row.transit (already computed) rather than
+    recalculating the layover duration a second time."""
+    if row.stop_id is None:
+        return f"{row.label} ({row.airport}): Baggage -- {row.baggage}"
     return (
         f"{row.label} ({row.airport}) via {row.stop_name} ({row.stop_id}): "
         f"{DEPARTURE_ID}->{row.stop_id} {row.leg1_duration}, layover {row.transit}, "
-        f"{row.stop_id}->{row.airport} {row.leg2_duration}"
+        f"{row.stop_id}->{row.airport} {row.leg2_duration} -- Baggage: {row.baggage}"
     )
 
 
@@ -283,7 +310,8 @@ def _build_sections(
                 for r in direct_rows
             ],
         )
-        tables.append(("DIRECT", table))
+        detail = "\n".join(_format_row_detail(r) for r in direct_rows)
+        tables.append(("DIRECT", f"{table}\n\n{detail}"))
     if one_stop_rows:
         table = _format_table(
             ["Airport", "Price", "Airline", "Dep", "Arr", "Transit", "Total"],
@@ -292,7 +320,7 @@ def _build_sections(
                 for r in one_stop_rows
             ],
         )
-        detail = "\n".join(_format_one_stop_detail(r) for r in one_stop_rows)
+        detail = "\n".join(_format_row_detail(r) for r in one_stop_rows)
         tables.append(("1 STOP (max)", f"{table}\n\n{detail}"))
 
     return top_line, tables, error_lines

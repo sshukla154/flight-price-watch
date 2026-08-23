@@ -27,6 +27,7 @@ _DIRECT_ITINERARY = {
             "airline": "KLM",
             "departure_airport": {"time": "2027-07-17 09:15"},
             "arrival_airport": {"time": "2027-07-17 21:30"},
+            "extensions": ["Below average legroom (29 in)", "Checked baggage for a fee"],
         }
     ],
     "total_duration": 735,
@@ -40,12 +41,14 @@ _ONE_STOP_ITINERARY = {
             "departure_airport": {"time": "2027-07-17 10:15"},
             "arrival_airport": {"time": "2027-07-17 15:00"},
             "duration": 180,
+            "extensions": ["Checked baggage for a fee"],
         },
         {
             "airline": "Oman Air",
             "departure_airport": {"time": "2027-07-17 16:30"},
             "arrival_airport": {"time": "2027-07-18 06:30"},
             "duration": 645,
+            "extensions": ["Average legroom (31 in)", "1 free checked bag"],
         },
     ],
     "layovers": [{"duration": 90, "name": "Muscat", "id": "MCT"}],
@@ -103,6 +106,7 @@ class TestRowFromItinerary:
             arrival="21:30",
             total="12h15m",
             transit=None,
+            baggage="Checked baggage for a fee",  # legroom extension filtered out
         )
         assert row.stop_id is None
         assert row.stop_name is None
@@ -121,6 +125,7 @@ class TestRowFromItinerary:
             arrival="06:30+1",
             total="15h15m",
             transit="1h30m",
+            baggage="AMS-MCT: Checked baggage for a fee; MCT-VNS: 1 free checked bag",
             stop_id="MCT",
             stop_name="Muscat",
             leg1_duration="3h00m",
@@ -132,15 +137,40 @@ class TestRowFromItinerary:
         assert row.airline == "Oman Air"  # not "Oman Air, Oman Air"
 
 
-class TestFormatOneStopDetail:
-    def test_exact_wording(self) -> None:
+class TestBaggageTextForLeg:
+    def test_matches_bag_related_extension_case_insensitively(self) -> None:
+        flight = {"extensions": ["Wi-Fi for a fee", "1 free Checked Bag"]}
+        assert cf._baggage_text_for_leg(flight) == "1 free Checked Bag"
+
+    def test_joins_multiple_bag_related_extensions(self) -> None:
+        flight = {"extensions": ["Carry-on bag included", "1 checked bag for a fee"]}
+        assert cf._baggage_text_for_leg(flight) == "Carry-on bag included, 1 checked bag for a fee"
+
+    def test_not_specified_when_no_extensions_mention_bags(self) -> None:
+        flight = {"extensions": ["Below average legroom (29 in)", "Wi-Fi for a fee"]}
+        assert cf._baggage_text_for_leg(flight) == "not specified"
+
+    def test_not_specified_when_extensions_missing_entirely(self) -> None:
+        assert cf._baggage_text_for_leg({}) == "not specified"
+
+
+class TestFormatRowDetail:
+    def test_direct_row_shows_label_airport_and_baggage_only(self) -> None:
+        row = cf._row_from_itinerary("Delhi", "DEL", _DIRECT_ITINERARY)
+
+        line = cf._format_row_detail(row)
+
+        assert line == "Delhi (DEL): Baggage -- Checked baggage for a fee"
+
+    def test_one_stop_row_includes_leg_breakdown_and_baggage(self) -> None:
         row = cf._row_from_itinerary("Varanasi", "VNS", _ONE_STOP_ITINERARY)
 
-        line = cf._format_one_stop_detail(row)
+        line = cf._format_row_detail(row)
 
         assert line == (
             f"Varanasi (VNS) via Muscat (MCT): {cf.DEPARTURE_ID}->MCT 3h00m, "
-            "layover 1h30m, MCT->VNS 10h45m"
+            "layover 1h30m, MCT->VNS 10h45m -- Baggage: "
+            "AMS-MCT: Checked baggage for a fee; MCT-VNS: 1 free checked bag"
         )
 
 
@@ -282,6 +312,7 @@ class TestBuildWhatsappMessage:
                     arrival="21:30",
                     total="12h15m",
                     transit=None,
+                    baggage="Checked baggage for a fee",
                 ),
                 one_stop_row=None,
                 error_line=None,
@@ -307,6 +338,7 @@ class TestBuildWhatsappMessage:
                     arrival="21:30",
                     total="12h15m",
                     transit=None,
+                    baggage="Checked baggage for a fee",
                 ),
                 one_stop_row=None,
                 error_line=None,
@@ -318,6 +350,29 @@ class TestBuildWhatsappMessage:
         assert message.count(cf.CURRENCY) == 1
         assert "480" in message
 
+    def test_direct_row_baggage_line_appears(self) -> None:
+        outcomes = [
+            cf.CandidateOutcome(
+                direct_row=cf.CategoryRow(
+                    airport="DEL",
+                    label="Delhi",
+                    price="480",
+                    airline="KLM",
+                    departure="09:15",
+                    arrival="21:30",
+                    total="12h15m",
+                    transit=None,
+                    baggage="Checked baggage for a fee",
+                ),
+                one_stop_row=None,
+                error_line=None,
+            )
+        ]
+
+        message = cf._build_whatsapp_message(outcomes)
+
+        assert "Delhi (DEL): Baggage -- Checked baggage for a fee" in message
+
     def test_all_three_sections_appear_when_populated(self) -> None:
         direct_row = cf.CategoryRow(
             airport="DEL",
@@ -328,6 +383,7 @@ class TestBuildWhatsappMessage:
             arrival="21:30",
             total="12h15m",
             transit=None,
+            baggage="Checked baggage for a fee",
         )
         one_stop_row = cf.CategoryRow(
             airport="VNS",
@@ -338,6 +394,7 @@ class TestBuildWhatsappMessage:
             arrival="20:00+1",
             total="19h55m",
             transit="8h00m",
+            baggage="1 free checked bag",
             stop_id="DXB",
             stop_name="Dubai",
             leg1_duration="3h00m",
@@ -361,6 +418,9 @@ class TestBuildWhatsappMessage:
         assert "Varanasi (VNS) via Dubai (DXB)" in message
         assert f"{cf.DEPARTURE_ID}->DXB 3h00m" in message
         assert "DXB->VNS 8h45m" in message
+        # baggage line appears for BOTH categories, not just 1-STOP
+        assert "Delhi (DEL): Baggage -- Checked baggage for a fee" in message
+        assert "Baggage: 1 free checked bag" in message
 
 
 class TestBuildEmailBody:
@@ -376,6 +436,7 @@ class TestBuildEmailBody:
                     arrival="21:30",
                     total="12h15m",
                     transit=None,
+                    baggage="Checked baggage for a fee",
                 ),
                 one_stop_row=None,
                 error_line=None,
@@ -390,6 +451,8 @@ class TestBuildEmailBody:
         assert "```" not in html_body  # no whatsapp fences in the email path
         assert "DIRECT" in html_body
         assert "480" in html_body
+        # baggage line appears under DIRECT too, not just 1-STOP
+        assert "Delhi (DEL): Baggage -- Checked baggage for a fee" in html_body
 
     def test_one_stop_detail_line_appears_in_body(self) -> None:
         outcomes = [
@@ -404,6 +467,7 @@ class TestBuildEmailBody:
                     arrival="20:00+1",
                     total="19h55m",
                     transit="8h00m",
+                    baggage="1 free checked bag",
                     stop_id="DXB",
                     stop_name="Dubai",
                     leg1_duration="3h00m",
@@ -416,6 +480,7 @@ class TestBuildEmailBody:
         _subject, html_body = cf._build_email_body(outcomes)
 
         assert "Varanasi (VNS) via Dubai (DXB)" in html_body
+        assert "Baggage: 1 free checked bag" in html_body
 
     def test_html_escapes_unsafe_characters(self) -> None:
         outcomes = [
