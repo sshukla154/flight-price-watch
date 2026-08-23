@@ -11,6 +11,10 @@ on:
         description: "Override date (YYYY-MM-DD) -- blank uses routes.toml's own default. Use a near-term date to test whether a 'no data yet' result is a real schedule-publication-horizon gap vs. a broken query, or (for DXN specifically) whether SerpApi has picked up the new airport at all."
         required: false
         default: ""
+      notify_channel:
+        description: "Force the notification channel (whatsapp/email) instead of the automatic GITHUB_ACTIONS-based pick -- blank uses the automatic pick. Useful to test the other-channel fallback, or to re-check whether CallMeBot's GitHub Actions IP block has ever lifted."
+        required: false
+        default: ""
 
 jobs:
   check:
@@ -41,4 +45,5 @@ jobs:
           # for a workflow_dispatch trigger; the daily `schedule` trigger
           # must never depend on it existing.
           FLIGHT_OUTBOUND_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.outbound_date || '' }}
+          FLIGHT_NOTIFY_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.notify_channel || '' }}
         run: python check_flights.py
