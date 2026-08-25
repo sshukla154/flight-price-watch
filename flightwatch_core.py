@@ -91,18 +91,20 @@ def fetch_all_itineraries(
     adults: int = 1,
     children: int = 0,
 ) -> list[dict[str, Any]]:
-    """One SerpApi Google Flights query; returns EVERY itinerary from
+    """One SerpApi Google Flights query; returns every itinerary from
     BOTH `best_flights` and `other_flights` -- Google Flights' own "best"
     curation optimizes for a blend of price/duration/stops, not strictly
     lowest price, so trusting `best_flights` alone can miss a cheaper (or
     direct, or otherwise notable) option sitting in `other_flights`.
 
-    Returns the full, unsorted, un-filtered list so a caller can bucket
-    by stop count, pick a cheapest-per-category, or whatever else it
-    needs -- this function's only job is "ask SerpApi once, hand back
-    everything it said, on this SAME query" so no caller ever needs a
-    second SerpApi call (and therefore a second unit of monthly quota)
-    just to see the itineraries a first call already fetched.
+    Returns the full, unsorted list -- minus any itinerary with no
+    resolved price (see the filter below) -- so a caller can bucket by
+    stop count, pick a cheapest-per-category, or whatever else it needs,
+    trusting every entry has a usable price without checking itself.
+    This function's only job is "ask SerpApi once, hand back everything
+    usable it said, on this SAME query" so no caller ever needs a second
+    SerpApi call (and therefore a second unit of monthly quota) just to
+    see the itineraries a first call already fetched.
     """
     response = requests.get(
         SERPAPI_URL,
@@ -127,7 +129,17 @@ def fetch_all_itineraries(
     if data.get("search_metadata", {}).get("status") != "Success":
         raise CheckFailed(f"SerpApi search did not succeed: {data.get('search_metadata')}")
 
-    itineraries = [*data.get("best_flights", []), *data.get("other_flights", [])]
+    # Google Flights occasionally shows an option with no resolved fare
+    # ("price unavailable") -- confirmed live 2026-08-25 when this crashed
+    # a caller with a bare KeyError. Filtered out HERE, at the actual data
+    # boundary, so every caller (fetch_cheapest_price's min(), or a
+    # driver script's own scoring) can trust every itinerary it sees has
+    # a usable price, without re-checking for it themselves.
+    itineraries = [
+        itinerary
+        for itinerary in [*data.get("best_flights", []), *data.get("other_flights", [])]
+        if "price" in itinerary
+    ]
     if not itineraries:
         raise NoFlightsFoundYet(
             f"No flights found for {departure_id}->{arrival_id} on {outbound_date}"

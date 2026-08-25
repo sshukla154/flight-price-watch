@@ -89,7 +89,9 @@ class TestFetchAllItineraries:
                 departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
             )
         # Both the best_flights entry (600) and the other_flights entry
-        # (450) come back, in that order -- nothing picked or dropped.
+        # (450) come back, in that order -- nothing picked or dropped
+        # (both have a real price; see test_drops_itineraries_with_no_
+        # resolved_price below for the one case that IS filtered).
         assert [itinerary["price"] for itinerary in itineraries] == [600, 450]
 
     def test_empty_result_raises_no_flights_found_yet(self) -> None:
@@ -114,6 +116,42 @@ class TestFetchAllItineraries:
                     currency="EUR",
                 )
         assert not isinstance(exc_info.value, core.NoFlightsFoundYet)
+
+    def test_drops_itineraries_with_no_resolved_price(self) -> None:
+        """Real bug, live-verified 2026-08-25: Google Flights occasionally
+        shows an option with no resolved fare -- a caller trusting every
+        itinerary has "price" crashed with a bare KeyError on real
+        production data. Filtering happens HERE so no caller needs its
+        own defensive check."""
+        response = {
+            "search_metadata": {"status": "Success"},
+            "best_flights": [{"flights": [{"airline": "KLM"}], "total_duration": 540}],
+            "other_flights": [
+                {"price": 450, "flights": [{"airline": "Air France"}], "total_duration": 720}
+            ],
+        }
+        with requests_mock.Mocker() as mock:
+            mock.get(core.SERPAPI_URL, json=response)
+            itineraries = core.fetch_all_itineraries(
+                departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
+            )
+        assert [itinerary["price"] for itinerary in itineraries] == [450]
+
+    def test_no_flights_found_yet_when_every_itinerary_lacks_a_price(self) -> None:
+        response = {
+            "search_metadata": {"status": "Success"},
+            "best_flights": [{"flights": [{"airline": "KLM"}], "total_duration": 540}],
+            "other_flights": [],
+        }
+        with requests_mock.Mocker() as mock:
+            mock.get(core.SERPAPI_URL, json=response)
+            with pytest.raises(core.NoFlightsFoundYet):
+                core.fetch_all_itineraries(
+                    departure_id="AMS",
+                    arrival_id="DEL",
+                    outbound_date="2027-07-17",
+                    currency="EUR",
+                )
 
     def test_adults_and_children_pass_through_to_the_request(self) -> None:
         with requests_mock.Mocker() as mock:
