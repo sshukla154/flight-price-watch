@@ -30,3 +30,26 @@ candidates = [
     { id = "LKO", label = "Lucknow", one_stop = false },
     { id = "DXN", label = "Noida (Jewar)", one_stop = false },
 ]
+
+# Opt-in itinerary filtering -- absent/empty by default, so nothing
+# changes unless a list here is actually populated. All four lists
+# are HARD filters except preferred_airlines (soft: score bonus only,
+# never excludes). excluded_layover_regions/required_layover_regions
+# have NO fallback if they empty a category's pool -- that category
+# just produces no row, same as any other "nothing useful to report"
+# case. required_airlines DOES fall back (to the region-filtered pool,
+# annotated as such) if the allow-list matches nothing, rather than
+# going blank.
+[check_flights.filters]
+preferred_airlines = []
+required_airlines = []
+excluded_layover_regions = []
+required_layover_regions = []
+
+# Deliberately incomplete -- extend by hand as new layover airports
+# show up, same workflow as editing candidates above. Every region
+# name used in excluded_layover_regions/required_layover_regions must
+# be a key defined here (validated at import time in check_flights.py).
+[check_flights.filters.layover_regions]
+middle_east = ["MCT", "DXB", "AUH", "DOH", "AMM", "CAI", "JED", "RUH", "BAH", "KWI"]
+europe_uk   = ["LHR", "LGW", "AMS", "CDG", "FRA", "MUC", "IST"]

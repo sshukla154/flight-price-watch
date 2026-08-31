@@ -47,7 +47,7 @@ from __future__ import annotations
 import html
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from flightwatch_core import (
@@ -92,6 +92,7 @@ class CategoryRow:
     stop_name: str | None = None
     leg1_duration: str | None = None
     leg2_duration: str | None = None
+    filtered_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,11 +102,90 @@ class CandidateOutcome:
     error_line: str | None
 
 
+@dataclass(frozen=True)
+class Filters:
+    """One candidate's active filter configuration, built from
+    routes.toml's [check_flights.filters] section -- see the
+    module-level _FILTERS loading/validation below for where these
+    values come from."""
+
+    preferred_airlines: tuple[str, ...]
+    required_airlines: tuple[str, ...]
+    excluded_layover_regions: tuple[str, ...]
+    required_layover_regions: tuple[str, ...]
+    layover_regions: dict[str, list[str]]
+
+
+def _validate_filter_lists(filters: dict[str, Any]) -> None:
+    """Each of the four filter keys must be an actual list -- catches
+    e.g. `preferred_airlines = "KLM"`, a valid TOML string that would
+    otherwise iterate per-character instead of failing loudly."""
+    for key in (
+        "preferred_airlines",
+        "required_airlines",
+        "excluded_layover_regions",
+        "required_layover_regions",
+    ):
+        value = filters.get(key, [])
+        if not isinstance(value, list):
+            raise CheckFailed(
+                f"check_flights.filters.{key} must be a list, got {type(value).__name__}"
+            )
+
+
+def _validate_region_keys(regions: tuple[str, ...], region_map: dict[str, list[str]]) -> None:
+    """Every region name used in excluded_layover_regions/
+    required_layover_regions must be an actual key in layover_regions --
+    catches a "middel_east"-style typo before it can silently match
+    nothing forever."""
+    for region in regions:
+        if region not in region_map:
+            raise CheckFailed(
+                f"check_flights.filters region '{region}' is not a key in layover_regions"
+            )
+
+
+# `.get()` defaults here, unlike every `_CONFIG[...]` read above (which
+# fail loud on a typo, per load_route_config's own stated "fail loud"
+# philosophy) -- because departure_id/candidates/etc. are core trip
+# parameters that must always be set, while filters are a genuinely
+# optional, backward-compatible, opt-in feature layered on top: absent
+# or empty, nothing about this script's behaviour changes.
+_FILTERS = _CONFIG.get("filters", {})
+_validate_filter_lists(_FILTERS)
+
+_LAYOVER_REGIONS: dict[str, list[str]] = _FILTERS.get("layover_regions", {})
+_PREFERRED_AIRLINES = tuple(_FILTERS.get("preferred_airlines", []))
+_REQUIRED_AIRLINES = tuple(_FILTERS.get("required_airlines", []))
+_EXCLUDED_LAYOVER_REGIONS = tuple(_FILTERS.get("excluded_layover_regions", []))
+_REQUIRED_LAYOVER_REGIONS = tuple(_FILTERS.get("required_layover_regions", []))
+
+_validate_region_keys(_EXCLUDED_LAYOVER_REGIONS, _LAYOVER_REGIONS)
+_validate_region_keys(_REQUIRED_LAYOVER_REGIONS, _LAYOVER_REGIONS)
+
 _TIME_VALUE_PER_HOUR = 15  # EUR/hour equivalent weight on total travel time
 _LAYOVER_PENALTY_PER_HOUR = 15  # EUR/hour EXTRA weight specifically on layover time
+_AIRLINE_PREFERENCE_BONUS = 25  # EUR-equivalent score discount for a preferred-airline match --
+# roughly half a layover-hour penalty: enough to break a close tie, not enough to override a
+# clearly better option on price/time/layover alone
 
 
-def _itinerary_score(itinerary: dict[str, Any]) -> float:
+def _itinerary_matches_any_airline(itinerary: dict[str, Any], airlines: tuple[str, ...]) -> bool:
+    """True if ANY leg's airline case-insensitive-SUBSTRING-matches ANY
+    entry in `airlines`. Substring, not exact match, because SerpApi
+    returns full descriptive names like "KLM Royal Dutch Airlines" --
+    exact match would silently never fire on a bare "KLM" config
+    entry. Shared by both the required-airlines hard filter and the
+    preferred-airlines score bonus so the matching rule can't drift
+    between the two."""
+    return any(
+        airline.casefold() in leg["airline"].casefold()
+        for leg in itinerary["flights"]
+        for airline in airlines
+    )
+
+
+def _itinerary_score(itinerary: dict[str, Any], preferred_airlines: tuple[str, ...] = ()) -> float:
     """Lower is better. price + a time-value-weighted total duration +
     an EXTRA penalty on layover time specifically. Layover minutes are
     deliberately counted TWICE -- once already inside total_duration,
@@ -113,17 +193,74 @@ def _itinerary_score(itinerary: dict[str, Any]) -> float:
     same time spent flying, and this is the one place that distinction
     matters. Both weights are simple, transparent EUR-per-hour
     constants, not fitted to any real preference data -- adjust them
-    if a real pick ever looks wrong."""
+    if a real pick ever looks wrong.
+
+    `preferred_airlines` is a SOFT preference only: a flat score
+    discount applied ONCE per itinerary (not once per leg) when any
+    leg matches -- it can break a close tie, it never excludes an
+    itinerary the way required_airlines does."""
     layover_minutes = sum(layover["duration"] for layover in itinerary.get("layovers") or [])
-    return (
+    score = (
         itinerary["price"]
         + (itinerary["total_duration"] / 60) * _TIME_VALUE_PER_HOUR
         + (layover_minutes / 60) * _LAYOVER_PENALTY_PER_HOUR
     )
+    if preferred_airlines and _itinerary_matches_any_airline(itinerary, preferred_airlines):
+        score -= _AIRLINE_PREFERENCE_BONUS
+    return score
+
+
+def _classify_layover_region(layover_id: str, region_map: dict[str, list[str]]) -> str | None:
+    """Which configured region `layover_id` belongs to, or None if it
+    isn't in ANY region's list yet -- a legitimate, expected result
+    (layover_regions is deliberately incomplete, extended by hand as
+    new layovers show up), not an error. Uppercase-normalizes
+    `layover_id` first since it comes from SerpApi's own data, not
+    something this codebase controls the casing of."""
+    normalized = layover_id.upper()
+    for region, airports in region_map.items():
+        if normalized in airports:
+            return region
+    return None
+
+
+def _passes_region_filters(
+    itinerary: dict[str, Any],
+    required_regions: tuple[str, ...],
+    excluded_regions: tuple[str, ...],
+    region_map: dict[str, list[str]],
+) -> bool:
+    """Region filtering is meaningless for a direct itinerary (no
+    layovers) -- always passes. For a one-stop itinerary, an
+    UNCLASSIFIED layover (not yet in region_map) also always passes
+    both checks -- a config gap should never silently drop an
+    itinerary nobody told this script to exclude. Empty
+    required_regions is a no-op (nothing to require)."""
+    layovers = itinerary.get("layovers") or []
+    if not layovers:
+        return True
+    region = _classify_layover_region(layovers[0]["id"], region_map)
+    if region is None:
+        return True
+    if region in excluded_regions:
+        return False
+    return not (required_regions and region not in required_regions)
+
+
+def _passes_airline_required_filter(
+    itinerary: dict[str, Any], required_airlines: tuple[str, ...]
+) -> bool:
+    """Empty `required_airlines` is a no-op (always passes) -- this is
+    a hard allow-list, not a preference: an itinerary with no matching
+    leg is excluded outright, not merely scored worse."""
+    if not required_airlines:
+        return True
+    return _itinerary_matches_any_airline(itinerary, required_airlines)
 
 
 def _best_by_stop_category(
     itineraries: list[dict[str, Any]],
+    preferred_airlines: tuple[str, ...] = (),
 ) -> dict[int, dict[str, Any]]:
     """Best-scored itinerary per stop count (see _itinerary_score --
     price, total time, and layover time combined, not price alone),
@@ -136,9 +273,42 @@ def _best_by_stop_category(
         if stop_count not in (_DIRECT, _ONE_STOP):
             continue
         current_best = best.get(stop_count)
-        if current_best is None or _itinerary_score(itinerary) < _itinerary_score(current_best):
+        if current_best is None or _itinerary_score(
+            itinerary, preferred_airlines
+        ) < _itinerary_score(current_best, preferred_airlines):
             best[stop_count] = itinerary
     return best
+
+
+def _filtered_best_by_stop_category(
+    itineraries: list[dict[str, Any]], filters: Filters
+) -> tuple[dict[int, dict[str, Any]], bool]:
+    """Thin wrapper around _best_by_stop_category (itself unchanged
+    except for now threading preferred_airlines through) -- region and
+    required-airline filtering happen here, BEFORE bucketing, so the
+    existing min-score-per-bucket loop stays oblivious to filtering.
+
+    `used_fallback` means a required_airlines allow-list was set but
+    matched nothing in the region-filtered pool, so the returned
+    buckets come from that region-filtered pool instead -- the best
+    AVAILABLE option, not a blank result."""
+    region_ok = [
+        it
+        for it in itineraries
+        if _passes_region_filters(
+            it,
+            filters.required_layover_regions,
+            filters.excluded_layover_regions,
+            filters.layover_regions,
+        )
+    ]
+    required_ok = [
+        it for it in region_ok if _passes_airline_required_filter(it, filters.required_airlines)
+    ]
+    pool, used_fallback = (
+        (required_ok, False) if required_ok else (region_ok, bool(filters.required_airlines))
+    )
+    return _best_by_stop_category(pool, filters.preferred_airlines), used_fallback
 
 
 def _time_of_day(departure_timestamp: str, timestamp: str) -> str:
@@ -250,14 +420,20 @@ def _format_row_detail(row: CategoryRow) -> str:
     """Readable per-candidate detail line -- always includes baggage;
     a one-stop row (row.stop_id is not None) also gets the per-leg
     breakdown, reusing row.transit (already computed) rather than
-    recalculating the layover duration a second time."""
+    recalculating the layover duration a second time. A row.filtered_fallback
+    row appends a note that it's the best AVAILABLE option, not one that
+    actually matched a configured required_airlines allow-list."""
     if row.stop_id is None:
-        return f"{row.label} ({row.airport}): Baggage -- {row.baggage}"
-    return (
-        f"{row.label} ({row.airport}) via {row.stop_name} ({row.stop_id}): "
-        f"{DEPARTURE_ID}->{row.stop_id} {row.leg1_duration}, layover {row.transit}, "
-        f"{row.stop_id}->{row.airport} {row.leg2_duration} -- Baggage: {row.baggage}"
-    )
+        detail = f"{row.label} ({row.airport}): Baggage -- {row.baggage}"
+    else:
+        detail = (
+            f"{row.label} ({row.airport}) via {row.stop_name} ({row.stop_id}): "
+            f"{DEPARTURE_ID}->{row.stop_id} {row.leg1_duration}, layover {row.transit}, "
+            f"{row.stop_id}->{row.airport} {row.leg2_duration} -- Baggage: {row.baggage}"
+        )
+    if row.filtered_fallback:
+        detail += " -- (no itinerary matched required filters, showing best available)"
+    return detail
 
 
 def _check_one(arrival_id: str, label: str, one_stop_eligible: bool) -> CandidateOutcome:
@@ -288,19 +464,31 @@ def _check_one(arrival_id: str, label: str, one_stop_eligible: bool) -> Candidat
             error_line=f"{label} ({arrival_id}): error -- {exc}",
         )
 
-    best = _best_by_stop_category(itineraries)
+    filters = Filters(
+        preferred_airlines=_PREFERRED_AIRLINES,
+        required_airlines=_REQUIRED_AIRLINES,
+        excluded_layover_regions=_EXCLUDED_LAYOVER_REGIONS,
+        required_layover_regions=_REQUIRED_LAYOVER_REGIONS,
+        layover_regions=_LAYOVER_REGIONS,
+    )
+    best, used_fallback = _filtered_best_by_stop_category(itineraries, filters)
     direct_row = (
         _row_from_itinerary(label, arrival_id, best[_DIRECT]) if _DIRECT in best else None
     )
+    if direct_row is not None and used_fallback:
+        direct_row = replace(direct_row, filtered_fallback=True)
     one_stop_row = (
         _row_from_itinerary(label, arrival_id, best[_ONE_STOP])
         if one_stop_eligible and _ONE_STOP in best
         else None
     )
+    if one_stop_row is not None and used_fallback:
+        one_stop_row = replace(one_stop_row, filtered_fallback=True)
     # best may legitimately be empty (every itinerary SerpApi returned had
-    # 2+ stops) -- that's the same "nothing useful to report" situation as
-    # NoFlightsFoundYet from this script's own point of view, handled
-    # identically by leaving both rows None.
+    # 2+ stops, or region/airline filtering emptied the pool) -- that's the
+    # same "nothing useful to report" situation as NoFlightsFoundYet from
+    # this script's own point of view, handled identically by leaving both
+    # rows None.
     return CandidateOutcome(direct_row=direct_row, one_stop_row=one_stop_row, error_line=None)
 
 

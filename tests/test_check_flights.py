@@ -15,10 +15,17 @@ configured, so they stay correct if routes.toml changes.
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
 import check_flights as cf
 import flightwatch_core as core
+
+# Captured before any test can monkeypatch it, so fixture teardown below
+# always has the one true path to reload check_flights back against,
+# regardless of monkeypatch's own teardown ordering.
+_REAL_ROUTES_CONFIG_PATH = core._ROUTES_CONFIG_PATH
 
 _DIRECT_ITINERARY = {
     "price": 480,
@@ -785,3 +792,363 @@ class TestMainFallback:
         assert exit_code == 0
         assert len(whatsapp_sent) == 1
         assert "480" in whatsapp_sent[0]
+
+
+# Region map used by every filter test below -- deliberately smaller than
+# routes.toml's real one so each test's intent is obvious from its own
+# entries, not from having to cross-reference the committed config file.
+_REGION_MAP = {
+    "middle_east": ["MCT", "DXB"],
+    "europe_uk": ["LHR", "AMS"],
+}
+
+
+class TestClassifyLayoverRegion:
+    def test_known_iata_returns_correct_region(self) -> None:
+        assert cf._classify_layover_region("MCT", _REGION_MAP) == "middle_east"
+
+    def test_lowercase_input_still_matches_uppercase_normalized(self) -> None:
+        assert cf._classify_layover_region("mct", _REGION_MAP) == "middle_east"
+
+    def test_unknown_iata_returns_none(self) -> None:
+        assert cf._classify_layover_region("XXX", _REGION_MAP) is None
+
+
+class TestPassesRegionFilters:
+    def test_direct_itinerary_always_passes_regardless_of_filters(self) -> None:
+        assert cf._passes_region_filters(
+            _DIRECT_ITINERARY,
+            required_regions=("europe_uk",),
+            excluded_regions=("middle_east",),
+            region_map=_REGION_MAP,
+        )
+
+    def test_excluded_region_layover_is_dropped(self) -> None:
+        assert not cf._passes_region_filters(
+            _ONE_STOP_ITINERARY,  # layover MCT -> middle_east
+            required_regions=(),
+            excluded_regions=("middle_east",),
+            region_map=_REGION_MAP,
+        )
+
+    def test_required_region_allow_list_keeps_only_matches(self) -> None:
+        assert cf._passes_region_filters(
+            _ONE_STOP_ITINERARY,  # layover MCT -> middle_east
+            required_regions=("middle_east",),
+            excluded_regions=(),
+            region_map=_REGION_MAP,
+        )
+        assert not cf._passes_region_filters(
+            _ONE_STOP_ITINERARY,
+            required_regions=("europe_uk",),
+            excluded_regions=(),
+            region_map=_REGION_MAP,
+        )
+
+    def test_unknown_region_layover_passes_both_filters(self) -> None:
+        unclassified = {
+            **_ONE_STOP_ITINERARY,
+            "layovers": [{"duration": 90, "name": "Somewhere", "id": "ZZZ"}],
+        }
+        assert cf._passes_region_filters(
+            unclassified,
+            required_regions=("middle_east",),
+            excluded_regions=("europe_uk",),
+            region_map=_REGION_MAP,
+        )
+
+    def test_both_filters_empty_is_a_no_op(self) -> None:
+        """Regression guard: pre-feature behaviour (no region filtering
+        at all) must still hold when both region filter lists are
+        empty, even for a one-stop itinerary with a classified
+        layover."""
+        assert cf._passes_region_filters(
+            _ONE_STOP_ITINERARY, required_regions=(), excluded_regions=(), region_map=_REGION_MAP
+        )
+
+
+class TestPassesAirlineRequiredFilter:
+    def test_empty_required_airlines_always_passes(self) -> None:
+        assert cf._passes_airline_required_filter(_DIRECT_ITINERARY, ())
+
+    def test_substring_match_against_full_airline_name(self) -> None:
+        itinerary = {
+            **_DIRECT_ITINERARY,
+            "flights": [{**_DIRECT_ITINERARY["flights"][0], "airline": "KLM Royal Dutch Airlines"}],
+        }
+        assert cf._passes_airline_required_filter(itinerary, ("KLM",))
+
+    def test_match_on_second_leg_not_just_first(self) -> None:
+        itinerary = {
+            **_ONE_STOP_ITINERARY,
+            "flights": [
+                {**_ONE_STOP_ITINERARY["flights"][0], "airline": "Oman Air"},
+                {**_ONE_STOP_ITINERARY["flights"][1], "airline": "KLM Royal Dutch Airlines"},
+            ],
+        }
+        assert cf._passes_airline_required_filter(itinerary, ("KLM",))
+
+    def test_no_match_returns_false(self) -> None:
+        assert not cf._passes_airline_required_filter(_DIRECT_ITINERARY, ("Emirates",))
+
+
+class TestItineraryScorePreferredAirlineBonus:
+    def test_empty_preferred_airlines_matches_prefeature_score(self) -> None:
+        """Regression guard: _itinerary_score's original two-term
+        formula (price + time-value-weighted duration + layover
+        penalty) must be byte-identical when no preferred airlines are
+        configured -- this IS the pre-feature score, just reached via
+        the new optional parameter's default."""
+        expected = 480 + (735 / 60) * cf._TIME_VALUE_PER_HOUR
+        assert cf._itinerary_score(
+            _DIRECT_ITINERARY, preferred_airlines=()
+        ) == pytest.approx(expected)
+
+    def test_one_matching_leg_subtracts_bonus_exactly_once(self) -> None:
+        expected = 480 + (735 / 60) * cf._TIME_VALUE_PER_HOUR - cf._AIRLINE_PREFERENCE_BONUS
+        assert cf._itinerary_score(
+            _DIRECT_ITINERARY, preferred_airlines=("KLM",)
+        ) == pytest.approx(expected)
+
+    def test_match_on_both_legs_still_subtracts_bonus_only_once(self) -> None:
+        # _ONE_STOP_ITINERARY: both flights are "Oman Air" -- matching on
+        # every leg must still only apply the bonus ONCE per itinerary.
+        expected = (
+            356
+            + (915 / 60) * cf._TIME_VALUE_PER_HOUR
+            + (90 / 60) * cf._LAYOVER_PENALTY_PER_HOUR
+            - cf._AIRLINE_PREFERENCE_BONUS
+        )
+        assert cf._itinerary_score(
+            _ONE_STOP_ITINERARY, preferred_airlines=("Oman Air",)
+        ) == pytest.approx(expected)
+
+
+class TestFilteredBestByStopCategory:
+    def test_required_airline_filter_emptying_pool_falls_back_to_region_filtered(self) -> None:
+        filters = cf.Filters(
+            preferred_airlines=(),
+            required_airlines=("Emirates",),  # matches neither itinerary below
+            excluded_layover_regions=(),
+            required_layover_regions=(),
+            layover_regions=_REGION_MAP,
+        )
+
+        best, used_fallback = cf._filtered_best_by_stop_category(
+            [_DIRECT_ITINERARY, _ONE_STOP_ITINERARY], filters
+        )
+
+        assert used_fallback is True
+        assert best[cf._DIRECT]["price"] == 480
+        assert best[cf._ONE_STOP]["price"] == 356
+
+    def test_excluded_region_filter_emptying_pool_gives_empty_result_no_fallback(self) -> None:
+        filters = cf.Filters(
+            preferred_airlines=(),
+            required_airlines=(),
+            excluded_layover_regions=("middle_east",),
+            required_layover_regions=(),
+            layover_regions=_REGION_MAP,
+        )
+
+        # _ONE_STOP_ITINERARY's only layover (MCT) is in the excluded
+        # region, so the pool is empty before required_airlines even
+        # gets a chance to run -- and required_airlines is empty here,
+        # so there is nothing to fall back to either.
+        best, used_fallback = cf._filtered_best_by_stop_category([_ONE_STOP_ITINERARY], filters)
+
+        assert best == {}
+        assert used_fallback is False
+
+    def test_combining_excluded_region_and_required_airline_in_one_candidate(self) -> None:
+        def _one_stop(price: int, stop_id: str, airline: str) -> dict[str, object]:
+            return {
+                "price": price,
+                "flights": [{"airline": airline}, {"airline": airline}],
+                "layovers": [{"duration": 60, "name": "x", "id": stop_id}],
+                "total_duration": 600,
+            }
+
+        excluded_region = _one_stop(300, "MCT", "British Airways")  # dropped: middle_east
+        allowed_region_wrong_airline = _one_stop(310, "LHR", "British Airways")  # dropped: airline
+        allowed_region_right_airline = _one_stop(320, "LHR", "KLM Royal Dutch Airlines")  # kept
+
+        filters = cf.Filters(
+            preferred_airlines=(),
+            required_airlines=("KLM",),
+            excluded_layover_regions=("middle_east",),
+            required_layover_regions=(),
+            layover_regions=_REGION_MAP,
+        )
+
+        best, used_fallback = cf._filtered_best_by_stop_category(
+            [excluded_region, allowed_region_wrong_airline, allowed_region_right_airline], filters
+        )
+
+        assert used_fallback is False  # a real match survived, no fallback needed
+        assert best[cf._ONE_STOP]["price"] == 320
+
+
+class TestFormatRowDetailFilteredFallback:
+    def test_fallback_annotation_appears_when_filtered_fallback_true(self) -> None:
+        row = cf.CategoryRow(
+            airport="DEL",
+            label="Delhi",
+            price="480",
+            airline="KLM",
+            departure="09:15",
+            arrival="21:30",
+            total="12h15m",
+            transit=None,
+            baggage="Checked baggage for a fee",
+            filtered_fallback=True,
+        )
+
+        line = cf._format_row_detail(row)
+
+        assert line == (
+            "Delhi (DEL): Baggage -- Checked baggage for a fee "
+            "-- (no itinerary matched required filters, showing best available)"
+        )
+
+    def test_no_fallback_annotation_when_filtered_fallback_false(self) -> None:
+        row = cf._row_from_itinerary("Delhi", "DEL", _DIRECT_ITINERARY)
+
+        line = cf._format_row_detail(row)
+
+        assert "(no itinerary matched required filters" not in line
+
+
+@pytest.fixture
+def reload_check_flights():
+    """Yields a function that monkeypatches flightwatch_core's routes
+    path and reloads check_flights against it -- module-level constants
+    like _CONFIG/_FILTERS/_PREFERRED_AIRLINES are computed once, at
+    import time, so exercising _validate_filter_lists/_validate_region_keys
+    (called only during that module-level setup) means actually
+    re-importing the module, not just calling a function directly.
+
+    Always reloads check_flights back against the real routes.toml
+    afterward, so later tests in this file see the same module state
+    they started with, even when the reload under test raised."""
+
+    def _reload(monkeypatch: pytest.MonkeyPatch, routes_path: object):
+        monkeypatch.setattr(core, "_ROUTES_CONFIG_PATH", routes_path)
+        return importlib.reload(cf)
+
+    yield _reload
+
+    core._ROUTES_CONFIG_PATH = _REAL_ROUTES_CONFIG_PATH
+    importlib.reload(cf)
+
+
+_MINIMAL_ROUTES_HEADER = """
+[check_flights]
+departure_id = "AMS"
+outbound_date = "2027-07-17"
+currency = "EUR"
+adults = 1
+children = 0
+candidates = [{ id = "DEL", label = "Delhi", one_stop = true }]
+"""
+
+
+class TestFilterConfigValidation:
+    """Module-level validation runs at IMPORT time (see check_flights.py's
+    _validate_filter_lists/_validate_region_keys calls, right after
+    _FILTERS is loaded from routes.toml) -- these tests reload the
+    module against a scratch routes.toml in tmp_path to exercise that
+    path, following the same monkeypatched-_ROUTES_CONFIG_PATH pattern
+    as test_flightwatch_core.py's test_missing_file_raises_check_failed.
+    """
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "preferred_airlines",
+            "required_airlines",
+            "excluded_layover_regions",
+            "required_layover_regions",
+        ],
+    )
+    def test_non_list_filter_value_raises_check_failed(
+        self,
+        key: str,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: object,
+        reload_check_flights,
+    ) -> None:
+        routes_path = tmp_path / "routes.toml"  # type: ignore[operator]
+        routes_path.write_text(
+            _MINIMAL_ROUTES_HEADER + f'\n[check_flights.filters]\n{key} = "KLM"\n'
+        )
+
+        with pytest.raises(core.CheckFailed, match=f"{key} must be a list"):
+            reload_check_flights(monkeypatch, routes_path)
+
+    def test_unknown_region_name_raises_check_failed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object, reload_check_flights
+    ) -> None:
+        routes_path = tmp_path / "routes.toml"  # type: ignore[operator]
+        routes_path.write_text(
+            _MINIMAL_ROUTES_HEADER
+            + """
+[check_flights.filters]
+excluded_layover_regions = ["middel_east"]
+
+[check_flights.filters.layover_regions]
+middle_east = ["MCT"]
+"""
+        )
+
+        with pytest.raises(core.CheckFailed, match="is not a key in layover_regions"):
+            reload_check_flights(monkeypatch, routes_path)
+
+    def test_absent_filters_block_loads_with_all_empty_defaults(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object, reload_check_flights
+    ) -> None:
+        routes_path = tmp_path / "routes.toml"  # type: ignore[operator]
+        routes_path.write_text(_MINIMAL_ROUTES_HEADER)
+
+        module = reload_check_flights(monkeypatch, routes_path)
+
+        assert module._PREFERRED_AIRLINES == ()
+        assert module._REQUIRED_AIRLINES == ()
+        assert module._EXCLUDED_LAYOVER_REGIONS == ()
+        assert module._REQUIRED_LAYOVER_REGIONS == ()
+        assert module._LAYOVER_REGIONS == {}
+
+
+class TestFullPipelineRegressionNoFilters:
+    """The constraint the whole feature depends on: with
+    [check_flights.filters] entirely absent from routes.toml, the
+    output must be byte-identical to what the pre-feature pipeline --
+    _best_by_stop_category and _row_from_itinerary called directly,
+    with no Filters/_filtered_best_by_stop_category concept involved at
+    all -- would have produced. This is the test that actually protects
+    "nothing regresses," not the individual filter-unit tests above."""
+
+    def test_output_matches_prefeature_pipeline_exactly(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object, reload_check_flights
+    ) -> None:
+        routes_path = tmp_path / "routes.toml"  # type: ignore[operator]
+        routes_path.write_text(_MINIMAL_ROUTES_HEADER)
+        module = reload_check_flights(monkeypatch, routes_path)
+
+        itineraries = [_DIRECT_ITINERARY, _ONE_STOP_ITINERARY]
+        monkeypatch.setattr(module, "fetch_all_itineraries", lambda **_: itineraries)
+
+        outcome = module._check_one("DEL", "Delhi", True)
+
+        best = module._best_by_stop_category(itineraries)
+        baseline_outcome = module.CandidateOutcome(
+            direct_row=module._row_from_itinerary("Delhi", "DEL", best[module._DIRECT]),
+            one_stop_row=module._row_from_itinerary("Delhi", "DEL", best[module._ONE_STOP]),
+            error_line=None,
+        )
+
+        assert outcome.direct_row == baseline_outcome.direct_row
+        assert outcome.one_stop_row == baseline_outcome.one_stop_row
+        assert module._build_whatsapp_message([outcome]) == module._build_whatsapp_message(
+            [baseline_outcome]
+        )

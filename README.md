@@ -138,6 +138,54 @@ so this costs nothing extra. If the fallback also fails, the run exits
 that day, but the failure is visible in the Action's own log rather
 than an unhandled crash.
 
+## Delivery consistency — the external cron dispatch
+
+GitHub Actions' `schedule:` trigger has gotten unreliable in 2026, not
+just "a few minutes late" as the workflow's own comment used to assume.
+Actual run timestamps show minutes-level jitter through 2026-08-26,
+then multi-hour delays (up to ~12h) from 2026-08-27 onward — the daily
+06:00 UTC check landing mid-afternoon or later instead. This lines up
+with real incidents on GitHub's own status page around 2026-08-26, and
+other people running scheduled Actions workflows report the same
+worsening pattern through 2026 — this isn't specific to this repo's
+setup, it's a platform-level `schedule:` reliability problem right now.
+
+The fix doesn't touch `schedule:` itself (GitHub gives no way to fix
+its own queue). Instead, an external free cron service —
+[cron-job.org](https://cron-job.org) or similar — calls GitHub's REST
+API directly to fire the workflow's existing `workflow_dispatch`
+trigger, which runs immediately rather than sitting in the same
+degraded `schedule:` queue.
+
+Setup:
+
+1. Create a GitHub PAT at
+   [github.com/settings/tokens](https://github.com/settings/tokens) —
+   **fine-grained**, scoped to just this repo, with **Actions: read and
+   write** permission. Nothing broader.
+2. Enter that PAT into cron-job.org's own UI, in the job's request
+   headers — never into this repo, and never as a GitHub Actions
+   secret. GitHub secrets exist for code running *inside* Actions;
+   this PAT is used by cron-job.org's servers, which need it directly,
+   not by anything in this repo.
+3. Configure the cron-job.org job:
+   - **URL**: `POST https://api.github.com/repos/sshukla154/flight-price-watch/actions/workflows/daily-check.yml/dispatches`
+   - **Header**: `Authorization: Bearer <PAT>`
+   - **Header**: `Accept: application/vnd.github+json`
+   - **Body**: `{"ref":"master"}`
+   - **Schedule**: daily, 06:00 UTC
+
+The workflow's own `schedule: "0 6 * * *"` cron stays in place,
+unchanged, as a backup trigger — if cron-job.org itself has an outage,
+the run still fires eventually through GitHub's own (degraded but not
+dead) queue.
+
+One visible side effect: the "official" daily run now shows up in `gh
+run list` as `event: workflow_dispatch`, not `event: schedule`. That's
+just which trigger fired first each day, not a sign anything is
+broken — `schedule` would only show up if cron-job.org's own call
+failed to land before GitHub's queue got to it.
+
 ## Configuration — `routes.toml`
 
 The **one file to edit** to change the route, date, or candidate
@@ -167,12 +215,52 @@ candidates = [
     { id = "LKO", label = "Lucknow", one_stop = false },
     { id = "DXN", label = "Noida (Jewar)", one_stop = false },
 ]
+
+[check_flights.filters]
+preferred_airlines = []
+required_airlines = []
+excluded_layover_regions = []
+required_layover_regions = []
+
+[check_flights.filters.layover_regions]
+middle_east = ["MCT", "DXB", "AUH", "DOH", "AMM", "CAI", "JED", "RUH", "BAH", "KWI"]
+europe_uk   = ["LHR", "LGW", "AMS", "CDG", "FRA", "MUC", "IST"]
 ```
 
 `one_stop = true` means "also compute/show a 1-STOP result for this
 candidate" — reserved for major hubs where a one-layover itinerary is
 a meaningful comparison. `false` means DIRECT-only, always, even if
 SerpApi genuinely has a one-stop option for that candidate.
+
+`[check_flights.filters]` is opt-in itinerary filtering, absent/empty
+by default — all four lists empty means nothing about scoring or
+selection changes. `preferred_airlines` is the only SOFT one: a match
+on any leg knocks `_AIRLINE_PREFERENCE_BONUS` (25, roughly half a
+layover-hour penalty) off that itinerary's score, enough to break a
+close tie, never enough to exclude anything or override a genuinely
+better option on price/time/layover. `required_airlines` is a HARD
+allow-list, opt-in (empty = off): an itinerary with no leg matching
+falls out of contention — but if the allow-list matches nothing at all
+for a candidate, that candidate doesn't go blank, it falls back to the
+best available option from the pool that survived region filtering,
+with `_format_row_detail` appending "(no itinerary matched required
+filters, showing best available)" so the row is never mistaken for a
+real match. `excluded_layover_regions` is HARD with no fallback: a
+one-stop itinerary whose layover lands in an excluded region is
+dropped outright, and if that empties the pool for a candidate, that
+category just produces no row that day, same as any other "nothing to
+report" case. `required_layover_regions` is also HARD with no
+fallback, unlike `required_airlines` — an allow-list that matches
+nothing simply leaves that category empty rather than widening back
+to an unfiltered pool, since `_passes_region_filters` runs before (and
+feeds into) the airline-fallback logic rather than getting a
+fallback path of its own. `layover_regions` is the hand-maintained
+IATA-code-to-region lookup both filters key against — deliberately
+incomplete, extend it the same way `candidates` gets extended, by hand
+as new layover airports show up in real results. An unclassified
+layover (an airport not yet in `layover_regions`) always passes both
+region filters — a config gap should never silently drop an itinerary
+nobody told this script to exclude.
 
 `FLIGHT_DEPARTURE_ID` / `FLIGHT_OUTBOUND_DATE` / `FLIGHT_CURRENCY` /
 `FLIGHT_ADULTS` / `FLIGHT_CHILDREN` environment variables still
