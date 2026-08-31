@@ -43,7 +43,7 @@ candidates = [
 [check_flights.filters]
 preferred_airlines = []
 required_airlines = []
-excluded_layover_regions = []
+excluded_layover_regions = ["middle_east"]
 required_layover_regions = []
 
 # Deliberately incomplete -- extend by hand as new layover airports
