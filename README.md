@@ -392,6 +392,18 @@ instead.
 
 ## Possible v2 (not built, deliberately)
 
+- **Real HTML email template for the Gmail channel** (spec handed over
+  2026-09-02, deferred to a later week) — replace `_build_email_body`'s
+  current `html.escape` + `<pre>` wrap of the plain-text report with a
+  proper email-client-safe HTML template: table-based layout, sections
+  grouped by stop count with a cheapest badge, inlined styles, dark-
+  mode-safe palette. WhatsApp's monospace table output is unaffected —
+  this only touches the email channel. Full spec (data shape, exact
+  rendering rules, email-HTML constraints) is preserved in project
+  memory, not repeated here. Needs its own design pass before
+  building: whether to generate the HTML directly in Python (matching
+  this repo's zero-extra-runtime approach) or introduce a Node build
+  step as originally specced.
 - **Multiple dates / date range** — SerpApi's Google Flights API has
   no calendar/cheapest-dates feature (verified live, 2026-08-21):
   `outbound_date` accepts exactly one fixed date per call, always. A
