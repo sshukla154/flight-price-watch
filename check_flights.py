@@ -44,12 +44,13 @@ process uncaught.
 
 from __future__ import annotations
 
-import html
 import os
 import sys
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
+import email_template
 from flightwatch_core import (
     CheckFailed,
     NoFlightsFoundYet,
@@ -87,6 +88,7 @@ class CategoryRow:
     departure: str
     arrival: str
     total: str
+    total_minutes: int
     transit: str | None
     baggage: str
     stop_id: str | None = None
@@ -383,6 +385,7 @@ def _row_from_itinerary(label: str, arrival_id: str, itinerary: dict[str, Any]) 
         departure=departure_time,
         arrival=arrival_time,
         total=f"{hours}h{minutes:02d}m",
+        total_minutes=itinerary["total_duration"],
         transit=transit,
         baggage=baggage,
         stop_id=stop_id,
@@ -523,6 +526,23 @@ def _named(label: str, code: str) -> str:
     return f"{label} ({code})"
 
 
+def _all_category_rows(outcomes: list[CandidateOutcome]) -> list[tuple[CategoryRow, bool]]:
+    """Every non-None CategoryRow across all outcomes, paired with
+    whether it's a one-stop row -- the single place that flattens
+    CandidateOutcome's direct_row/one_stop_row pair, shared by every
+    channel renderer (_build_sections for WhatsApp/email's plain
+    tables, _email_options for the HTML template) so a future
+    CandidateOutcome field doesn't need teaching to two independent
+    extraction loops."""
+    rows: list[tuple[CategoryRow, bool]] = []
+    for outcome in outcomes:
+        if outcome.direct_row is not None:
+            rows.append((outcome.direct_row, False))
+        if outcome.one_stop_row is not None:
+            rows.append((outcome.one_stop_row, True))
+    return rows
+
+
 def _build_sections(
     outcomes: list[CandidateOutcome],
 ) -> tuple[str, list[tuple[str, str]], list[str]]:
@@ -530,8 +550,9 @@ def _build_sections(
     (section header, table text) pairs -- table text has no fence/HTML
     wrapping, that's each channel's own job -- and the plain error
     lines (errors are never tabular)."""
-    direct_rows = [o.direct_row for o in outcomes if o.direct_row is not None]
-    one_stop_rows = [o.one_stop_row for o in outcomes if o.one_stop_row is not None]
+    all_rows = _all_category_rows(outcomes)
+    direct_rows = [r for r, is_one_stop in all_rows if not is_one_stop]
+    one_stop_rows = [r for r, is_one_stop in all_rows if is_one_stop]
     error_lines = [o.error_line for o in outcomes if o.error_line is not None]
 
     top_line = (
@@ -597,21 +618,84 @@ def _build_whatsapp_message(outcomes: list[CandidateOutcome]) -> str:
     return "\n".join(sections)
 
 
+def _email_options(outcomes: list[CandidateOutcome]) -> list[dict[str, Any]]:
+    """Plain-dict shape email_template.render() understands -- see
+    that module for the exact fields. airline's " + " join is the
+    inverse of _row_from_itinerary's own ", ".join(...) -- safe as
+    long as no real airline name contains the literal substring ", ",
+    which SerpApi data never has in practice. arr/arr_next_day are
+    recovered by splitting CategoryRow.arrival's "+1" suffix rather
+    than touching _time_of_day -- that string format is now a contract
+    both this and the WhatsApp table rely on."""
+    options = []
+    for row, is_one_stop in _all_category_rows(outcomes):
+        arr_next_day = row.arrival.endswith("+1")
+        clean_arr = row.arrival[:-2] if arr_next_day else row.arrival
+        options.append(
+            {
+                "airline": row.airline.replace(", ", " + "),
+                "from": DEPARTURE_ID,
+                "to": row.airport,
+                "to_label": row.label,
+                "price": row.price,
+                "price_value": int(float(row.price)),  # tolerates "300"/"300.0" alike
+                "dep": row.departure,
+                "arr": clean_arr,
+                "arr_next_day": arr_next_day,
+                "total": row.total,
+                "total_minutes": row.total_minutes,
+                "stops": (
+                    [{"via": row.stop_name, "transit": row.transit}] if is_one_stop else []
+                ),
+            }
+        )
+    return options
+
+
+def _recommendation(options: list[dict[str, Any]], currency: str) -> str:
+    """Empty options -> "" (email_template skips the panel entirely)
+    -- reachable in production: a run where every candidate errored
+    still reaches _build_email_body (the silence rule only suppresses
+    when direct_row/one_stop_row/error_line are ALL None), and
+    _email_options flattens to nothing in that case. Every branch
+    below returns a plain string, never raises."""
+    if not options:
+        return ""
+
+    cheapest = min(options, key=lambda o: o["price_value"])
+    summary = f"{cheapest['airline']} to {cheapest['to_label']} at {currency} {cheapest['price']}"
+
+    if not cheapest["stops"]:
+        one_stop_options = [o for o in options if o["stops"]]
+        if one_stop_options:
+            fastest_one_stop = min(one_stop_options, key=lambda o: o["total_minutes"])
+            diff_minutes = fastest_one_stop["total_minutes"] - cheapest["total_minutes"]
+            if diff_minutes >= 60:
+                return (
+                    f"{summary} -- cheapest overall and "
+                    f"{diff_minutes // 60}h quicker than any one-stop."
+                )
+
+    return f"{summary} -- cheapest overall."
+
+
 def _build_email_body(outcomes: list[CandidateOutcome]) -> tuple[str, str]:
-    """Gmail's plain-text view uses a proportional font that would
-    misalign the raw table, so this sends HTML with a <pre> block
-    instead -- no ``` fences needed, <pre> already forces monospace.
-    Returns (subject, html_body)."""
-    top_line, tables, error_lines = _build_sections(outcomes)
-    sections = [top_line]
-    for header, table in tables:
-        sections.append(f"\n{header}\n{table}")
-    if error_lines:
-        sections.append("\nERRORS\n" + "\n".join(error_lines))
-    text = "\n".join(sections)
+    """Real, visually designed HTML (email_template.render()) instead
+    of the old html.escape()+<pre> dump -- see email_template.py for
+    the actual markup. Returns (subject, html_body)."""
+    error_lines = [o.error_line for o in outcomes if o.error_line is not None]
+    options = _email_options(outcomes)
+    recommendation = _recommendation(options, CURRENCY)
 
     subject = f"Flight watch: {DEPARTURE_ID} on {OUTBOUND_DATE}"
-    html_body = f'<pre style="font-family: monospace">{html.escape(text)}</pre>'
+    html_body = email_template.render(
+        options=options,
+        recommendation=recommendation,
+        currency=CURRENCY,
+        departure_label=DEPARTURE_LABEL,
+        checked_on=datetime.now().strftime("%d %b %Y").lstrip("0"),
+        errors=error_lines,
+    )
     return subject, html_body
 
 

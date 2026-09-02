@@ -152,6 +152,7 @@ class TestRowFromItinerary:
             departure="09:15",
             arrival="21:30",
             total="12h15m",
+            total_minutes=735,
             transit=None,
             baggage="Checked baggage for a fee",  # legroom extension filtered out
         )
@@ -171,6 +172,7 @@ class TestRowFromItinerary:
             departure="10:15",
             arrival="06:30+1",
             total="15h15m",
+            total_minutes=915,
             transit="1h30m",
             baggage="AMS-MCT: Checked baggage for a fee; MCT-VNS: 1 free checked bag",
             stop_id="MCT",
@@ -398,6 +400,7 @@ class TestBuildWhatsappMessage:
                     departure="09:15",
                     arrival="21:30",
                     total="12h15m",
+                    total_minutes=735,
                     transit=None,
                     baggage="Checked baggage for a fee",
                 ),
@@ -424,6 +427,7 @@ class TestBuildWhatsappMessage:
                     departure="09:15",
                     arrival="21:30",
                     total="12h15m",
+                    total_minutes=735,
                     transit=None,
                     baggage="Checked baggage for a fee",
                 ),
@@ -448,6 +452,7 @@ class TestBuildWhatsappMessage:
                     departure="09:15",
                     arrival="21:30",
                     total="12h15m",
+                    total_minutes=735,
                     transit=None,
                     baggage="Checked baggage for a fee",
                 ),
@@ -469,6 +474,7 @@ class TestBuildWhatsappMessage:
             departure="09:15",
             arrival="21:30",
             total="12h15m",
+            total_minutes=735,
             transit=None,
             baggage="Checked baggage for a fee",
         )
@@ -480,6 +486,7 @@ class TestBuildWhatsappMessage:
             departure="20:35",
             arrival="20:00+1",
             total="19h55m",
+            total_minutes=1195,
             transit="8h00m",
             baggage="1 free checked bag",
             stop_id="DXB",
@@ -518,6 +525,7 @@ class TestBuildWhatsappMessage:
             departure="09:15",
             arrival="21:30",
             total="12h15m",
+            total_minutes=735,
             transit=None,
             baggage="Checked baggage for a fee",
         )
@@ -529,6 +537,7 @@ class TestBuildWhatsappMessage:
             departure="20:35",
             arrival="20:00+1",
             total="19h55m",
+            total_minutes=1195,
             transit="8h00m",
             baggage="1 free checked bag",
             stop_id="DXB",
@@ -583,6 +592,7 @@ class TestBuildEmailBody:
                     departure="09:15",
                     arrival="21:30",
                     total="12h15m",
+                    total_minutes=735,
                     transit=None,
                     baggage="Checked baggage for a fee",
                 ),
@@ -594,13 +604,11 @@ class TestBuildEmailBody:
         subject, html_body = cf._build_email_body(outcomes)
 
         assert subject == f"Flight watch: {cf.DEPARTURE_ID} on {cf.OUTBOUND_DATE}"
-        assert html_body.startswith('<pre style="font-family: monospace">')
-        assert html_body.endswith("</pre>")
+        assert html_body.startswith("<!DOCTYPE html>")
         assert "```" not in html_body  # no whatsapp fences in the email path
         assert "DIRECT" in html_body
         assert "480" in html_body
-        # baggage line appears under DIRECT too, not just 1-STOP
-        assert "Delhi (DEL): Baggage -- Checked baggage for a fee" in html_body
+        assert "KLM" in html_body
 
     def test_one_stop_detail_line_appears_in_body(self) -> None:
         outcomes = [
@@ -614,6 +622,7 @@ class TestBuildEmailBody:
                     departure="20:35",
                     arrival="20:00+1",
                     total="19h55m",
+                    total_minutes=1195,
                     transit="8h00m",
                     baggage="1 free checked bag",
                     stop_id="DXB",
@@ -627,8 +636,12 @@ class TestBuildEmailBody:
 
         _subject, html_body = cf._build_email_body(outcomes)
 
-        assert "Varanasi (VNS) via Dubai (DXB)" in html_body
-        assert "Baggage: 1 free checked bag" in html_body
+        assert "ONE STOP" in html_body
+        assert "DIRECT" not in html_body  # no direct rows this time
+        assert "via Dubai" in html_body
+        assert "8h00m transit" in html_body
+        assert "IndiGo" in html_body
+        assert "364" in html_body
 
     def test_html_escapes_unsafe_characters(self) -> None:
         outcomes = [
@@ -644,6 +657,141 @@ class TestBuildEmailBody:
         assert "<script>" not in html_body
         assert "&lt;script&gt;" in html_body
         assert "&amp;boom" in html_body
+
+
+class TestAllCategoryRows:
+    def test_flattens_direct_and_one_stop_across_multiple_outcomes(self) -> None:
+        direct_row = cf._row_from_itinerary("Delhi", "DEL", _DIRECT_ITINERARY)
+        one_stop_row = cf._row_from_itinerary("Varanasi", "VNS", _ONE_STOP_ITINERARY)
+        outcomes = [
+            cf.CandidateOutcome(direct_row=direct_row, one_stop_row=None, error_line=None),
+            cf.CandidateOutcome(direct_row=None, one_stop_row=one_stop_row, error_line=None),
+            cf.CandidateOutcome(direct_row=None, one_stop_row=None, error_line="boom"),
+        ]
+
+        rows = cf._all_category_rows(outcomes)
+
+        assert rows == [(direct_row, False), (one_stop_row, True)]
+
+    def test_empty_outcomes_gives_empty_list(self) -> None:
+        assert cf._all_category_rows([]) == []
+
+
+class TestEmailOptions:
+    def test_direct_row_maps_to_empty_stops_and_clean_arrival(self) -> None:
+        row = cf._row_from_itinerary("Delhi", "DEL", _DIRECT_ITINERARY)
+        outcomes = [cf.CandidateOutcome(direct_row=row, one_stop_row=None, error_line=None)]
+
+        options = cf._email_options(outcomes)
+
+        assert len(options) == 1
+        option = options[0]
+        assert option["stops"] == []
+        assert option["arr"] == "21:30"
+        assert option["arr_next_day"] is False
+        assert option["price_value"] == 480
+        assert option["total_minutes"] == 735
+
+    def test_one_stop_row_splits_next_day_suffix_and_builds_stops(self) -> None:
+        row = cf._row_from_itinerary("Varanasi", "VNS", _ONE_STOP_ITINERARY)
+        outcomes = [cf.CandidateOutcome(direct_row=None, one_stop_row=row, error_line=None)]
+
+        options = cf._email_options(outcomes)
+
+        option = options[0]
+        assert option["arr"] == "06:30"  # "+1" suffix stripped
+        assert option["arr_next_day"] is True
+        assert option["stops"] == [{"via": "Muscat", "transit": "1h30m"}]
+
+    def test_multiple_airlines_joined_with_plus_not_comma(self) -> None:
+        itinerary = {
+            **_ONE_STOP_ITINERARY,
+            "flights": [
+                {**_ONE_STOP_ITINERARY["flights"][0], "airline": "Qatar Airways"},
+                {**_ONE_STOP_ITINERARY["flights"][1], "airline": "IndiGo"},
+            ],
+        }
+        row = cf._row_from_itinerary("Varanasi", "VNS", itinerary)
+        outcomes = [cf.CandidateOutcome(direct_row=None, one_stop_row=row, error_line=None)]
+
+        options = cf._email_options(outcomes)
+
+        assert options[0]["airline"] == "Qatar Airways + IndiGo"
+
+    def test_float_formatted_price_string_does_not_crash(self) -> None:
+        """Real bug caught during implementation: an older test fixture
+        produces a price like "300.0" (str(float(...))) -- price_value
+        must tolerate that, not just a clean integer string."""
+        row = cf._row_from_itinerary("Delhi", "DEL", {**_DIRECT_ITINERARY, "price": 300.0})
+        outcomes = [cf.CandidateOutcome(direct_row=row, one_stop_row=None, error_line=None)]
+
+        options = cf._email_options(outcomes)
+
+        assert options[0]["price_value"] == 300
+
+
+class TestRecommendation:
+    def _option(self, **overrides: object) -> dict[str, object]:
+        base = {
+            "airline": "KLM",
+            "to_label": "Delhi",
+            "price": "480",
+            "price_value": 480,
+            "total_minutes": 600,
+            "stops": [],
+        }
+        base.update(overrides)
+        return base
+
+    def test_empty_options_returns_empty_string(self) -> None:
+        assert cf._recommendation([], "EUR") == ""
+
+    def test_direct_cheapest_with_at_least_hour_faster_gets_comparative_clause(self) -> None:
+        cheapest_direct = self._option(total_minutes=600)  # 10h
+        slower_one_stop = self._option(
+            price_value=900, total_minutes=780, stops=[{"via": "X", "transit": "1h"}]
+        )  # 13h -- 3h slower
+
+        text = cf._recommendation([cheapest_direct, slower_one_stop], "EUR")
+
+        assert text == (
+            "KLM to Delhi at EUR 480 -- cheapest overall and 3h quicker than any one-stop."
+        )
+
+    def test_direct_cheapest_with_sub_hour_gap_has_no_comparative_clause(self) -> None:
+        cheapest_direct = self._option(total_minutes=600)
+        barely_slower_one_stop = self._option(
+            price_value=900, total_minutes=630, stops=[{"via": "X", "transit": "1h"}]
+        )  # only 30 minutes slower -- must not claim "0h quicker"
+
+        text = cf._recommendation([cheapest_direct, barely_slower_one_stop], "EUR")
+
+        assert text == "KLM to Delhi at EUR 480 -- cheapest overall."
+        assert "quicker" not in text
+
+    def test_direct_cheapest_with_no_one_stop_to_compare_has_no_comparative_clause(self) -> None:
+        only_direct = self._option()
+
+        text = cf._recommendation([only_direct], "EUR")
+
+        assert text == "KLM to Delhi at EUR 480 -- cheapest overall."
+
+    def test_one_stop_is_cheapest_has_no_comparative_clause(self) -> None:
+        cheapest_one_stop = self._option(stops=[{"via": "X", "transit": "1h"}])
+        pricier_direct = self._option(price_value=900)
+
+        text = cf._recommendation([cheapest_one_stop, pricier_direct], "EUR")
+
+        assert text == "KLM to Delhi at EUR 480 -- cheapest overall."
+
+    def test_tie_break_is_encounter_order(self) -> None:
+        first = self._option(to_label="Delhi")
+        tied_second = self._option(to_label="Mumbai")  # same price_value=480
+
+        text = cf._recommendation([first, tied_second], "EUR")
+
+        assert "Delhi" in text
+        assert "Mumbai" not in text
 
 
 class TestMainSilenceRule:
@@ -1082,6 +1230,7 @@ class TestFormatRowDetailFilteredFallback:
             departure="09:15",
             arrival="21:30",
             total="12h15m",
+            total_minutes=735,
             transit=None,
             baggage="Checked baggage for a fee",
             filtered_fallback=True,
