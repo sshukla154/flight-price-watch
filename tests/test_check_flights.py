@@ -201,6 +201,11 @@ class TestBaggageTextForLeg:
         assert cf._baggage_text_for_leg({}) == "not specified"
 
 
+class TestNamed:
+    def test_wraps_code_in_parens_after_label(self) -> None:
+        assert cf._named("Amsterdam", "AMS") == "Amsterdam (AMS)"
+
+
 class TestFormatRowDetail:
     def test_direct_row_shows_label_airport_and_baggage_only(self) -> None:
         row = cf._row_from_itinerary("Delhi", "DEL", _DIRECT_ITINERARY)
@@ -538,11 +543,12 @@ class TestBuildWhatsappMessage:
 
         message = cf._build_whatsapp_message(outcomes)
         lines = message.split("\n")
+        from_cell = f"{cf.DEPARTURE_LABEL} ({cf.DEPARTURE_ID})"
 
         direct_header = next(line for line in lines if line.startswith("From"))
         assert direct_header.split() == ["From", "To", "Price", "Airline", "Dep", "Arr", "Total"]
-        direct_data_row = next(line for line in lines if line.startswith(cf.DEPARTURE_ID))
-        assert direct_data_row.split()[:2] == [cf.DEPARTURE_ID, "DEL"]
+        direct_data_row = next(line for line in lines if line.startswith(from_cell))
+        assert "Delhi (DEL)" in direct_data_row
 
         via_header = next(line for line in lines if line.startswith("From") and "Via" in line)
         assert via_header.split() == [
@@ -557,9 +563,12 @@ class TestBuildWhatsappMessage:
             "Total",
         ]
         via_data_row = next(
-            line for line in lines if line.startswith(cf.DEPARTURE_ID) and "VNS" in line
+            line for line in lines if line.startswith(from_cell) and "Varanasi" in line
         )
-        assert via_data_row.split()[:3] == [cf.DEPARTURE_ID, "VNS", "DXB"]
+        assert "Varanasi (VNS)" in via_data_row
+        assert "Dubai (DXB)" in via_data_row
+        # "To" must come before "Via" in the row -- proves column order, not just presence
+        assert via_data_row.index("Varanasi (VNS)") < via_data_row.index("Dubai (DXB)")
 
 
 class TestBuildEmailBody:
@@ -1119,6 +1128,7 @@ def reload_check_flights():
 _MINIMAL_ROUTES_HEADER = """
 [check_flights]
 departure_id = "AMS"
+departure_label = "Amsterdam"
 outbound_date = "2027-07-17"
 currency = "EUR"
 adults = 1

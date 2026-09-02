@@ -66,6 +66,7 @@ _CONFIG = load_route_config("check_flights")
 # fallback has to treat "" the same as unset. The daily cron never sets
 # this env var, so production behaviour always comes from routes.toml.
 DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or _CONFIG["departure_id"]
+DEPARTURE_LABEL = os.environ.get("FLIGHT_DEPARTURE_LABEL") or _CONFIG["departure_label"]
 OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or _CONFIG["outbound_date"]
 CURRENCY = os.environ.get("FLIGHT_CURRENCY") or _CONFIG["currency"]
 ADULTS = int(os.environ.get("FLIGHT_ADULTS") or _CONFIG["adults"])
@@ -515,6 +516,13 @@ def _passenger_summary() -> str:
     return " + ".join(parts)
 
 
+def _named(label: str, code: str) -> str:
+    """"Name (CODE)" -- the one place this convention is spelled out,
+    since it's used for From/To/Via alike (matches _format_row_detail's
+    own long-established "Delhi (DEL)" style)."""
+    return f"{label} ({code})"
+
+
 def _build_sections(
     outcomes: list[CandidateOutcome],
 ) -> tuple[str, list[tuple[str, str]], list[str]]:
@@ -531,12 +539,22 @@ def _build_sections(
         f"{_passenger_summary()}"
     )
 
+    from_cell = _named(DEPARTURE_LABEL, DEPARTURE_ID)
+
     tables: list[tuple[str, str]] = []
     if direct_rows:
         table = _format_table(
             ["From", "To", "Price", "Airline", "Dep", "Arr", "Total"],
             [
-                [DEPARTURE_ID, r.airport, r.price, r.airline, r.departure, r.arrival, r.total]
+                [
+                    from_cell,
+                    _named(r.label, r.airport),
+                    r.price,
+                    r.airline,
+                    r.departure,
+                    r.arrival,
+                    r.total,
+                ]
                 for r in direct_rows
             ],
         )
@@ -547,9 +565,9 @@ def _build_sections(
             ["From", "To", "Via", "Price", "Airline", "Dep", "Arr", "Transit", "Total"],
             [
                 [
-                    DEPARTURE_ID,
-                    r.airport,
-                    r.stop_id or "",
+                    from_cell,
+                    _named(r.label, r.airport),
+                    _named(r.stop_name, r.stop_id) if r.stop_id else "",
                     r.price,
                     r.airline,
                     r.departure,
