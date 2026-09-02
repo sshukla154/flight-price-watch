@@ -47,7 +47,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import email_template
@@ -69,6 +69,10 @@ _CONFIG = load_route_config("check_flights")
 DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or _CONFIG["departure_id"]
 DEPARTURE_LABEL = os.environ.get("FLIGHT_DEPARTURE_LABEL") or _CONFIG["departure_label"]
 OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or _CONFIG["outbound_date"]
+_RETURN_AFTER_WEEKS = int(
+    os.environ.get("FLIGHT_RETURN_AFTER_WEEKS") or _CONFIG["return_after_weeks"]
+)
+RETURN_DATE = (date.fromisoformat(OUTBOUND_DATE) + timedelta(weeks=_RETURN_AFTER_WEEKS)).isoformat()
 CURRENCY = os.environ.get("FLIGHT_CURRENCY") or _CONFIG["currency"]
 ADULTS = int(os.environ.get("FLIGHT_ADULTS") or _CONFIG["adults"])
 CHILDREN = int(os.environ.get("FLIGHT_CHILDREN") or _CONFIG["children"])
@@ -458,6 +462,7 @@ def _check_one(arrival_id: str, label: str, one_stop_eligible: bool) -> Candidat
             departure_id=DEPARTURE_ID,
             arrival_id=arrival_id,
             outbound_date=OUTBOUND_DATE,
+            return_date=RETURN_DATE,
             currency=CURRENCY,
             adults=ADULTS,
             children=CHILDREN,
@@ -556,8 +561,8 @@ def _build_sections(
     error_lines = [o.error_line for o in outcomes if o.error_line is not None]
 
     top_line = (
-        f"Flight watch from {DEPARTURE_ID} on {OUTBOUND_DATE} ({CURRENCY}) -- "
-        f"{_passenger_summary()}"
+        f"Flight watch from {DEPARTURE_ID} on {OUTBOUND_DATE}, "
+        f"back {RETURN_DATE} ({CURRENCY}) -- {_passenger_summary()}"
     )
 
     from_cell = _named(DEPARTURE_LABEL, DEPARTURE_ID)
@@ -687,7 +692,7 @@ def _build_email_body(outcomes: list[CandidateOutcome]) -> tuple[str, str]:
     options = _email_options(outcomes)
     recommendation = _recommendation(options, CURRENCY)
 
-    subject = f"Flight watch: {DEPARTURE_ID} on {OUTBOUND_DATE}"
+    subject = f"Flight watch: {DEPARTURE_ID} on {OUTBOUND_DATE}, back {RETURN_DATE}"
     html_body = email_template.render(
         options=options,
         recommendation=recommendation,

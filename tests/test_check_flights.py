@@ -603,7 +603,9 @@ class TestBuildEmailBody:
 
         subject, html_body = cf._build_email_body(outcomes)
 
-        assert subject == f"Flight watch: {cf.DEPARTURE_ID} on {cf.OUTBOUND_DATE}"
+        assert subject == (
+            f"Flight watch: {cf.DEPARTURE_ID} on {cf.OUTBOUND_DATE}, back {cf.RETURN_DATE}"
+        )
         assert html_body.startswith("<!DOCTYPE html>")
         assert "```" not in html_body  # no whatsapp fences in the email path
         assert "DIRECT" in html_body
@@ -911,7 +913,9 @@ class TestMainSilenceRule:
         assert whatsapp_sent == []
         assert len(email_sent) == 1
         subject, body = email_sent[0]
-        assert subject == f"Flight watch: {cf.DEPARTURE_ID} on {cf.OUTBOUND_DATE}"
+        assert subject == (
+            f"Flight watch: {cf.DEPARTURE_ID} on {cf.OUTBOUND_DATE}, back {cf.RETURN_DATE}"
+        )
         assert "480" in body
 
     def test_invalid_notify_channel_fails_fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1279,6 +1283,7 @@ _MINIMAL_ROUTES_HEADER = """
 departure_id = "AMS"
 departure_label = "Amsterdam"
 outbound_date = "2027-07-17"
+return_after_weeks = 5
 currency = "EUR"
 adults = 1
 children = 0

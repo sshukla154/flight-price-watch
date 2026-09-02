@@ -87,6 +87,7 @@ def fetch_all_itineraries(
     departure_id: str,
     arrival_id: str,
     outbound_date: str,
+    return_date: str,
     currency: str,
     adults: int = 1,
     children: int = 0,
@@ -97,14 +98,19 @@ def fetch_all_itineraries(
     lowest price, so trusting `best_flights` alone can miss a cheaper (or
     direct, or otherwise notable) option sitting in `other_flights`.
 
+    Round trip (type=1) -- `price` on each itinerary is already the
+    real round-trip total, not an outbound-only figure: verified live
+    2026-09-02 against a real account by comparing this call's price
+    against the departure_token follow-up call's price for the same
+    itinerary (identical). That follow-up call only exists to let a
+    caller swap which return flight pairs with a chosen outbound --
+    irrelevant here, so it's never made; this stays ONE SerpApi call
+    per candidate, same as the one-way search it replaced.
+
     Returns the full, unsorted list -- minus any itinerary with no
     resolved price (see the filter below) -- so a caller can bucket by
     stop count, pick a cheapest-per-category, or whatever else it needs,
     trusting every entry has a usable price without checking itself.
-    This function's only job is "ask SerpApi once, hand back everything
-    usable it said, on this SAME query" so no caller ever needs a second
-    SerpApi call (and therefore a second unit of monthly quota) just to
-    see the itineraries a first call already fetched.
     """
     response = requests.get(
         SERPAPI_URL,
@@ -113,7 +119,8 @@ def fetch_all_itineraries(
             "departure_id": departure_id,
             "arrival_id": arrival_id,
             "outbound_date": outbound_date,
-            "type": "2",  # one-way
+            "return_date": return_date,
+            "type": "1",  # round trip
             "currency": currency,
             "adults": adults,
             "children": children,
@@ -153,6 +160,7 @@ def fetch_cheapest_price(
     departure_id: str,
     arrival_id: str,
     outbound_date: str,
+    return_date: str,
     currency: str,
     adults: int = 1,
     children: int = 0,
@@ -165,6 +173,7 @@ def fetch_cheapest_price(
         departure_id=departure_id,
         arrival_id=arrival_id,
         outbound_date=outbound_date,
+        return_date=return_date,
         currency=currency,
         adults=adults,
         children=children,

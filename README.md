@@ -1,10 +1,11 @@
 # flight-price-watch
 
-One daily check, pushing a notification: compares the best AMS one-way
-option (price, time, and layover combined — not cheapest alone) to
-several candidate Indian destination airports, on a fixed date.
-Notification channel picks itself based on where the script runs —
-see "Notification channel" below.
+One daily check, pushing a notification: compares the best AMS round-
+trip option (price, time, and layover combined — not cheapest alone)
+to several candidate Indian destination airports, out on a fixed date
+and back a fixed number of weeks later. Notification channel picks
+itself based on where the script runs — see "Notification channel"
+below.
 
 ## How it works
 
@@ -13,11 +14,23 @@ see "Notification channel" below.
    Actions tab's "Run workflow" button.
 2. For each candidate airport in `routes.toml`'s `[check_flights]`
    section, it queries [SerpApi's Google Flights API](https://serpapi.com/google-flights-api)
-   **once** for every one-way fare from AMS on the configured date, then
-   locally splits the results into the best-scored **direct** option
-   and (for hub candidates only — see below) the best-scored **1-stop
-   (max)** option — one search per candidate either way, never two, to
-   stay inside the monthly search budget.
+   **once** for every round-trip fare from AMS on the configured
+   outbound/return dates, then locally splits the results into the
+   best-scored **direct** option and (for hub candidates only — see
+   below) the best-scored **1-stop (max)** option — one search per
+   candidate either way, never two, to stay inside the monthly search
+   budget.
+
+   Round trip still means **one** SerpApi call, not two — confirmed
+   live (2026-09-02) against SerpApi's actual behavior rather than
+   trusting their docs, which imply the first call's price is
+   outbound-only. It isn't: when both `outbound_date` and
+   `return_date` are set, the very first response already carries the
+   real round-trip total per itinerary. SerpApi also supports a
+   second, `departure_token`-based call to let you swap which return
+   flight pairs with a given outbound — this script never makes that
+   call, since it only ever wants the one best-scored pairing, not a
+   choice.
 
    "Best" is not "cheapest": `_itinerary_score` in `check_flights.py`
    combines price with a time-value weight on total duration
@@ -195,7 +208,8 @@ airports — no Python edit needed. Quick reference:
 |---|---|---|
 | From location (departure airport) | `departure_id` | `"AMS"` |
 | To location(s) (destination airports compared) | `candidates` | add/remove `{ id = "...", label = "...", one_stop = true/false }` entries |
-| Date of travel | `outbound_date` | `"2027-07-17"` |
+| Outbound date | `outbound_date` | `"2027-07-17"` |
+| Trip length (return date) | `return_after_weeks` | `5` — return date is always computed from `outbound_date`, never stored separately, so it can't drift out of sync |
 | Passengers | `adults` / `children` | `2` / `1` — headcount only, SerpApi has no age field (a 7-year-old is just `children = 1`) |
 
 Edit the value(s), commit, push — the next scheduled run (or a manual
@@ -204,7 +218,9 @@ Edit the value(s), commit, push — the next scheduled run (or a manual
 ```toml
 [check_flights]
 departure_id = "AMS"
+departure_label = "Amsterdam"
 outbound_date = "2027-07-17"
+return_after_weeks = 5
 currency = "EUR"
 adults = 2
 children = 1
@@ -262,9 +278,9 @@ layover (an airport not yet in `layover_regions`) always passes both
 region filters — a config gap should never silently drop an itinerary
 nobody told this script to exclude.
 
-`FLIGHT_DEPARTURE_ID` / `FLIGHT_OUTBOUND_DATE` / `FLIGHT_CURRENCY` /
-`FLIGHT_ADULTS` / `FLIGHT_CHILDREN` environment variables still
-override these for one-off diagnostic runs
+`FLIGHT_DEPARTURE_ID` / `FLIGHT_OUTBOUND_DATE` / `FLIGHT_RETURN_AFTER_WEEKS` /
+`FLIGHT_CURRENCY` / `FLIGHT_ADULTS` / `FLIGHT_CHILDREN` environment
+variables still override these for one-off diagnostic runs
 (e.g. `workflow_dispatch` with a near-term test date) — precedence is
 env var > `routes.toml`. There's no per-run override for the candidate
 list itself; edit `routes.toml` and commit for that.

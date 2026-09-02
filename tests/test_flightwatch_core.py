@@ -32,6 +32,7 @@ class TestLoadRouteConfig:
         config = core.load_route_config("check_flights")
         assert config["departure_id"] == "AMS"
         assert config["outbound_date"] == "2027-07-17"
+        assert config["return_after_weeks"] == 5
         assert config["currency"] == "EUR"
         assert config["adults"] == 2
         assert config["children"] == 1
@@ -86,7 +87,11 @@ class TestFetchAllItineraries:
         with requests_mock.Mocker() as mock:
             mock.get(core.SERPAPI_URL, json=_SUCCESS_RESPONSE_TWO_OFFERS)
             itineraries = core.fetch_all_itineraries(
-                departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
+                departure_id="AMS",
+                arrival_id="DEL",
+                outbound_date="2027-07-17",
+                return_date="2027-08-21",
+                currency="EUR",
             )
         # Both the best_flights entry (600) and the other_flights entry
         # (450) come back, in that order -- nothing picked or dropped
@@ -102,6 +107,7 @@ class TestFetchAllItineraries:
                     departure_id="AMS",
                     arrival_id="DEL",
                     outbound_date="2027-07-17",
+                    return_date="2027-08-21",
                     currency="EUR",
                 )
 
@@ -113,6 +119,7 @@ class TestFetchAllItineraries:
                     departure_id="AMS",
                     arrival_id="DEL",
                     outbound_date="2027-07-17",
+                    return_date="2027-08-21",
                     currency="EUR",
                 )
         assert not isinstance(exc_info.value, core.NoFlightsFoundYet)
@@ -133,7 +140,11 @@ class TestFetchAllItineraries:
         with requests_mock.Mocker() as mock:
             mock.get(core.SERPAPI_URL, json=response)
             itineraries = core.fetch_all_itineraries(
-                departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
+                departure_id="AMS",
+                arrival_id="DEL",
+                outbound_date="2027-07-17",
+                return_date="2027-08-21",
+                currency="EUR",
             )
         assert [itinerary["price"] for itinerary in itineraries] == [450]
 
@@ -150,6 +161,7 @@ class TestFetchAllItineraries:
                     departure_id="AMS",
                     arrival_id="DEL",
                     outbound_date="2027-07-17",
+                    return_date="2027-08-21",
                     currency="EUR",
                 )
 
@@ -160,6 +172,7 @@ class TestFetchAllItineraries:
                 departure_id="AMS",
                 arrival_id="DEL",
                 outbound_date="2027-07-17",
+                return_date="2027-08-21",
                 currency="EUR",
                 adults=2,
                 children=1,
@@ -171,10 +184,32 @@ class TestFetchAllItineraries:
         with requests_mock.Mocker() as mock:
             mock.get(core.SERPAPI_URL, json=_SUCCESS_RESPONSE_TWO_OFFERS)
             core.fetch_all_itineraries(
-                departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
+                departure_id="AMS",
+                arrival_id="DEL",
+                outbound_date="2027-07-17",
+                return_date="2027-08-21",
+                currency="EUR",
             )
         assert mock.last_request.qs["adults"] == ["1"]
         assert mock.last_request.qs["children"] == ["0"]
+
+    def test_sends_round_trip_type_and_return_date(self) -> None:
+        """type=1 (round trip), not type=2 (one-way) -- and return_date
+        actually reaches the request, not just accepted as a Python
+        param. Real round-trip flow verified live 2026-09-02: the
+        first call's price is already the full round-trip total, no
+        departure_token follow-up call needed."""
+        with requests_mock.Mocker() as mock:
+            mock.get(core.SERPAPI_URL, json=_SUCCESS_RESPONSE_TWO_OFFERS)
+            core.fetch_all_itineraries(
+                departure_id="AMS",
+                arrival_id="DEL",
+                outbound_date="2027-07-17",
+                return_date="2027-08-21",
+                currency="EUR",
+            )
+        assert mock.last_request.qs["type"] == ["1"]
+        assert mock.last_request.qs["return_date"] == ["2027-08-21"]
 
 
 class TestFetchCheapestPrice:
@@ -182,7 +217,11 @@ class TestFetchCheapestPrice:
         with requests_mock.Mocker() as mock:
             mock.get(core.SERPAPI_URL, json=_SUCCESS_RESPONSE_TWO_OFFERS)
             itinerary = core.fetch_cheapest_price(
-                departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
+                departure_id="AMS",
+                arrival_id="DEL",
+                outbound_date="2027-07-17",
+                return_date="2027-08-21",
+                currency="EUR",
             )
         # 450 (other_flights) is cheaper than 600 (best_flights) -- proves
         # this doesn't just trust best_flights[0].
@@ -196,6 +235,7 @@ class TestFetchCheapestPrice:
                     departure_id="AMS",
                     arrival_id="DEL",
                     outbound_date="2027-07-17",
+                    return_date="2027-08-21",
                     currency="EUR",
                 )
 
@@ -207,6 +247,7 @@ class TestFetchCheapestPrice:
                     departure_id="AMS",
                     arrival_id="DEL",
                     outbound_date="2027-07-17",
+                    return_date="2027-08-21",
                     currency="EUR",
                 )
         # Specifically NOT the NoFlightsFoundYet subclass -- a real HTTP
@@ -222,6 +263,7 @@ class TestFetchCheapestPrice:
                     departure_id="AMS",
                     arrival_id="DEL",
                     outbound_date="2027-07-17",
+                    return_date="2027-08-21",
                     currency="EUR",
                 )
 
@@ -229,7 +271,11 @@ class TestFetchCheapestPrice:
         monkeypatch.delenv("SERPAPI_KEY", raising=False)
         with pytest.raises(core.CheckFailed, match="SERPAPI_KEY is not set"):
             core.fetch_cheapest_price(
-                departure_id="AMS", arrival_id="DEL", outbound_date="2027-07-17", currency="EUR"
+                departure_id="AMS",
+                arrival_id="DEL",
+                outbound_date="2027-07-17",
+                return_date="2027-08-21",
+                currency="EUR",
             )
 
     def test_forwards_adults_and_children_to_fetch_all_itineraries(self) -> None:
@@ -239,6 +285,7 @@ class TestFetchCheapestPrice:
                 departure_id="AMS",
                 arrival_id="DEL",
                 outbound_date="2027-07-17",
+                return_date="2027-08-21",
                 currency="EUR",
                 adults=2,
                 children=1,
