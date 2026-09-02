@@ -7,8 +7,8 @@ candidate in EITHER category, never when even one candidate has a real
 finding or a real error (and a real error must still exit 1).
 
 Candidates come from routes.toml's [check_flights] section at import
-time (DEL, BOM, VNS, LKO, DXN as of this writing, each with its own
-one_stop eligibility flag) -- these tests exercise the logic generically
+time (DEL, BOM, LKO as of this writing, each with its own one_stop
+eligibility flag) -- these tests exercise the logic generically
 via check_flights.CANDIDATES rather than hardcoding which airports are
 configured, so they stay correct if routes.toml changes.
 """
@@ -319,9 +319,10 @@ class TestCheckOne:
     def test_one_stop_bucket_dropped_when_not_eligible(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The actual bug being fixed: VNS/LKO/DXN should never show a
+        """The actual bug being fixed: a non-hub, near-destination
+        candidate (one_stop_eligible=False) should never show a
         1-STOP result, even when SerpApi genuinely has one -- only
-        DIRECT is meaningful for a near-destination airport."""
+        DIRECT is meaningful for it."""
         monkeypatch.setattr(
             cf, "fetch_all_itineraries", lambda **_: [_DIRECT_ITINERARY, _ONE_STOP_ITINERARY]
         )

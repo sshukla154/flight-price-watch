@@ -39,9 +39,7 @@ class TestLoadRouteConfig:
         assert config["candidates"] == [
             {"id": "DEL", "label": "Delhi", "one_stop": True},
             {"id": "BOM", "label": "Mumbai", "one_stop": True},
-            {"id": "VNS", "label": "Varanasi", "one_stop": False},
             {"id": "LKO", "label": "Lucknow", "one_stop": False},
-            {"id": "DXN", "label": "Noida (Jewar)", "one_stop": False},
         ]
 
     def test_missing_section_raises_check_failed(self) -> None:

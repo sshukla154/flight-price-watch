@@ -27,14 +27,12 @@ children = 1
 # result for this candidate" -- reserved for major hubs where a
 # one-layover itinerary is a meaningful comparison. false means
 # DIRECT-only, deliberately: a one-stop itinerary all the way into a
-# near-destination airport (VNS/LKO/DXN) isn't what "1 stop" means for
-# this trip -- see README's "Airports considered" table.
+# near-destination airport (LKO) isn't what "1 stop" means for this
+# trip -- see README's "Airports considered" table.
 candidates = [
     { id = "DEL", label = "Delhi", one_stop = true },
     { id = "BOM", label = "Mumbai", one_stop = true },
-    { id = "VNS", label = "Varanasi", one_stop = false },
     { id = "LKO", label = "Lucknow", one_stop = false },
-    { id = "DXN", label = "Noida (Jewar)", one_stop = false },
 ]
 
 # Opt-in itinerary filtering -- absent/empty by default, so nothing

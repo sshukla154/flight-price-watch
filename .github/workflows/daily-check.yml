@@ -8,7 +8,7 @@ on:
   workflow_dispatch: # manual "Run workflow" button, for testing on demand
     inputs:
       outbound_date:
-        description: "Override date (YYYY-MM-DD) -- blank uses routes.toml's own default. Use a near-term date to test whether a 'no data yet' result is a real schedule-publication-horizon gap vs. a broken query, or (for DXN specifically) whether SerpApi has picked up the new airport at all."
+        description: "Override date (YYYY-MM-DD) -- blank uses routes.toml's own default. Use a near-term date to test whether a 'no data yet' result is a real schedule-publication-horizon gap vs. a broken query."
         required: false
         default: ""
       notify_channel:

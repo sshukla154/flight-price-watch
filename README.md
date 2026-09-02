@@ -51,21 +51,21 @@ below.
    category is simply omitted from that section, e.g.:
 
    ```
-   Flight watch from AMS on 2027-07-17 (EUR) -- 2 adults + 1 child
+   Flight watch from AMS on 2027-07-22, back 2027-08-29 (EUR) -- 2 adults + 1 child
 
    DIRECT
-   Airport  Price  Airline  Dep    Arr      Total
-   -------  -----  -------  -----  -------  ------
-   DEL         480  KLM      09:15  21:30    12h15m
+   From             To            Price  Airline  Dep    Arr      Total
+   ---------------  ------------  -----  -------  -----  -------  ------
+   Amsterdam (AMS)  Delhi (DEL)     480  KLM      09:15  21:30    12h15m
 
    Delhi (DEL): Baggage -- Checked baggage for a fee
 
    1 STOP (max)
-   Airport  Price  Airline   Dep    Arr      Transit  Total
-   -------  -----  --------  -----  -------  -------  ------
-   VNS         356  Oman Air  10:15  06:30+1  1h30m    15h15m
+   From             To            Via                           Price  Airline        Dep    Arr      Transit  Total
+   ---------------  ------------  ----------------------------  -----  -------------  -----  -------  -------  ------
+   Amsterdam (AMS)  Mumbai (BOM)  Hamad International Airport    1618  Qatar Airways  10:15  06:30+1  1h30m    15h15m
 
-   Varanasi (VNS) via Muscat (MCT): AMS->MCT 3h00m, layover 1h30m, MCT->VNS 10h45m -- Baggage: AMS-MCT: Checked baggage for a fee; MCT-VNS: 1 free checked bag
+   Mumbai (BOM) via Hamad International Airport (DOH): AMS->DOH 5h50m, layover 1h30m, DOH->BOM 4h00m -- Baggage: not specified
    ```
 
    Every candidate row is followed by its own detail line: for 1-STOP
@@ -77,9 +77,9 @@ below.
    **1-STOP is only computed for hub candidates** (`one_stop = true`
    in `routes.toml`, currently DEL and BOM) — "1 stop" here means
    "reach a major hub via one layover," not "search a one-layover
-   itinerary all the way into a near-destination airport." VNS/LKO/DXN
-   are DIRECT-only by design: even if SerpApi returns a real one-stop
-   option for them, it's deliberately discarded, never shown. See
+   itinerary all the way into a near-destination airport." LKO is
+   DIRECT-only by design: even if SerpApi returns a real one-stop
+   option for it, it's deliberately discarded, never shown. See
    "Airports considered" below for which candidates are hub-eligible.
 
    Two caveats on what SerpApi's Google Flights data actually
@@ -113,8 +113,10 @@ below.
    failure on a daily job is worse than a noisy one, just not for the
    routine "not published yet" case above.
 
-**Budget**: 5 candidates × 1 search/day ≈ 150 searches/month, well
-inside SerpApi's free-tier 250/month cap (~100/month spare).
+**Budget**: 3 candidates × 1 search/day ≈ 90 searches/month, well
+inside SerpApi's free-tier 250/month cap (~160/month spare). Round
+trip (see below) costs no extra searches — the same one call per
+candidate already returns the full round-trip price.
 
 ## Notification channel
 
@@ -227,9 +229,7 @@ children = 1
 candidates = [
     { id = "DEL", label = "Delhi", one_stop = true },
     { id = "BOM", label = "Mumbai", one_stop = true },
-    { id = "VNS", label = "Varanasi", one_stop = false },
     { id = "LKO", label = "Lucknow", one_stop = false },
-    { id = "DXN", label = "Noida (Jewar)", one_stop = false },
 ]
 
 [check_flights.filters]
@@ -278,7 +278,7 @@ layover (an airport not yet in `layover_regions`) always passes both
 region filters — a config gap should never silently drop an itinerary
 nobody told this script to exclude.
 
-`FLIGHT_DEPARTURE_ID` / `FLIGHT_OUTBOUND_DATE` / `FLIGHT_RETURN_AFTER_WEEKS` /
+`FLIGHT_DEPARTURE_ID` / `FLIGHT_OUTBOUND_DATE` / `FLIGHT_RETURN_AFTER_DAYS` /
 `FLIGHT_CURRENCY` / `FLIGHT_ADULTS` / `FLIGHT_CHILDREN` environment
 variables still override these for one-off diagnostic runs
 (e.g. `workflow_dispatch` with a near-term test date) — precedence is
@@ -291,9 +291,9 @@ list itself; edit `routes.toml` and commit for that.
 |---|---|---|---|---|
 | DEL | Delhi | Active | Yes | Major established international hub |
 | BOM | Mumbai | Active | Yes | Major established international hub — already proven to have real SerpApi/Google Flights coverage, having shown up as a real layover city in earlier live tests before being added as its own candidate |
-| VNS | Varanasi | Active | No | Real international connectivity, but DIRECT-only — a one-layover itinerary all the way into a near-destination airport isn't the "1 stop" comparison this trip wants |
-| LKO | Lucknow | Active | No | Real international connectivity (Chaudhary Charan Singh Int'l), same DIRECT-only reasoning as VNS |
-| DXN | Noida (Jewar) | Active | No | Brand new (commercial ops began 2026-06-15), Zurich Airport International-operated, real ambition (12M pax capacity, meant to complement DEL) — DIRECT-only, same reasoning as VNS |
+| LKO | Lucknow | Active | No | Real international connectivity (Chaudhary Charan Singh Int'l), but DIRECT-only — a one-layover itinerary all the way into a near-destination airport isn't the "1 stop" comparison this trip wants |
+| VNS | Varanasi | Dropped | -- | Removed 2026-09-02 by explicit choice — the user narrowed the candidate list down to DEL/BOM/LKO |
+| DXN | Noida (Jewar) | Dropped | -- | Removed 2026-09-02, same choice — was brand new (commercial ops began 2026-06-15), Zurich Airport International-operated, real ambition (12M pax capacity, meant to complement DEL), but not part of the current candidate list |
 | GOP | Gorakhpur | Dropped | -- | Small regional airport, likely poor international coverage even though geographically closest to the traveller's actual destination |
 | KBK | Kushinagar | Dropped | -- | ~55km from Gorakhpur, has some international ambition, but **live-tested and confirmed zero Google Flights coverage** even on a near-term date (2026-10-15) — not a schedule-horizon issue, a real coverage gap |
 | KNU | Kanpur (Chakeri) | Dropped | -- | Small, domestic-focused — never live-tested, but unpromising for the same reason as GOP |
@@ -309,11 +309,6 @@ comes back empty, handled the same as any other "nothing to report"
 case (see `NoFlightsFoundYet` in `flightwatch_core.py`) — the daily job
 will just start succeeding on its own once real data loads for both
 legs; no action needed.
-
-**DXN specifically** is a second, independent reason a candidate might
-show "no data yet" regardless of date — it only started commercial
-operations 2026-06-15, so Google Flights may simply not have indexed it
-yet at all.
 
 Test any of this directly with a near-term override date instead of
 waiting:
@@ -416,9 +411,9 @@ instead.
   no calendar/cheapest-dates feature (verified live, 2026-08-21):
   `outbound_date` accepts exactly one fixed date per call, always. A
   range means one SerpApi call per date, multiplied by however many
-  candidates are active — budget math matters here (today's 4
-  candidates × 1 date ≈ 120/month; a ±3-day range would jump to
-  ~840/month, well past the 250 free cap) — needs either fewer
+  candidates are active — budget math matters here (today's 3
+  candidates × 1 date ≈ 90/month; a ±3-day range would jump to
+  ~630/month, well past the 250 free cap) — needs either fewer
   candidates, a lower check frequency, or scoping the range to one
   candidate at a time.
 - A committed price-history log (trends visible beyond WhatsApp chat

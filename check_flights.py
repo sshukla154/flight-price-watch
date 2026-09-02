@@ -6,13 +6,15 @@ Candidates and route/date come from routes.toml's [check_flights] section
 remove, or retarget a candidate; this script has no hardcoded airport
 list. See README.md's "Airports considered" table for the full
 reasoning behind which candidates are active vs. deliberately dropped
-(GOP, KBK, KNU) -- this script only reflects whatever routes.toml
-currently says, not the history of how that list got here.
+(GOP, KBK, KNU, VNS, DXN) -- this script only reflects whatever
+routes.toml currently says, not the history of how that list got here.
 
 Each candidate gets exactly ONE SerpApi call (`fetch_all_itineraries`),
 never two -- splitting the result into a direct bucket and a one-stop
-bucket happens locally, so this doesn't double the ~120/month quota
-this repo already runs close to. Itineraries with 2+ stops are silently
+bucket happens locally, and the round-trip total already comes back in
+that same call (no departure_token follow-up), so this stays well
+inside the ~90/month quota this repo runs at. Itineraries with 2+ stops
+are silently
 out of scope (the user only asked for direct and "indirect, max 1
 stop"). If an airport has no option in a given category, that airport
 is simply omitted from that section -- never an explicit "not found"
@@ -455,8 +457,8 @@ def _check_one(arrival_id: str, label: str, one_stop_eligible: bool) -> Candidat
 
     one_stop_eligible=False means a one-stop bucket is deliberately
     discarded even if SerpApi returned one -- reaching a
-    near-destination airport (VNS/LKO/DXN) via one layover isn't a
-    comparison this trip cares about, only DIRECT is shown for those."""
+    near-destination airport (LKO) via one layover isn't a comparison
+    this trip cares about, only DIRECT is shown for those."""
     try:
         itineraries = fetch_all_itineraries(
             departure_id=DEPARTURE_ID,
