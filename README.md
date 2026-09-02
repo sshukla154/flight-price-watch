@@ -112,11 +112,11 @@ regardless of trigger type or timing — not a rate limit, a standing
 block on that class of IP). So the channel is picked automatically:
 
 - **Running in GitHub Actions** (`GITHUB_ACTIONS=true`, set
-  automatically in every job) → **email**, via Gmail SMTP. Sent as
-  HTML with a `<pre>` monospace block, since Gmail's plain-text view
-  uses a proportional font that would misalign the raw table — same
-  reason WhatsApp needed its own ``` ` ``` fence trick, just solved
-  differently for email.
+  automatically in every job) → **email**, via Gmail SMTP. A real
+  visually designed HTML email (`email_template.py`) — grouped by stop
+  count, a cheapest badge, a recommendation panel — built for email
+  clients specifically (nested tables, inlined styles, no JS/images/
+  web fonts), not the same monospace table WhatsApp gets.
 - **Running anywhere else** (e.g. your own machine, on your home
   network) → **WhatsApp**, via CallMeBot — this already works fine
   from a residential IP.
@@ -392,18 +392,6 @@ instead.
 
 ## Possible v2 (not built, deliberately)
 
-- **Real HTML email template for the Gmail channel** (spec handed over
-  2026-09-02, deferred to a later week) — replace `_build_email_body`'s
-  current `html.escape` + `<pre>` wrap of the plain-text report with a
-  proper email-client-safe HTML template: table-based layout, sections
-  grouped by stop count with a cheapest badge, inlined styles, dark-
-  mode-safe palette. WhatsApp's monospace table output is unaffected —
-  this only touches the email channel. Full spec (data shape, exact
-  rendering rules, email-HTML constraints) is preserved in project
-  memory, not repeated here. Needs its own design pass before
-  building: whether to generate the HTML directly in Python (matching
-  this repo's zero-extra-runtime approach) or introduce a Node build
-  step as originally specced.
 - **Multiple dates / date range** — SerpApi's Google Flights API has
   no calendar/cheapest-dates feature (verified live, 2026-08-21):
   `outbound_date` accepts exactly one fixed date per call, always. A
