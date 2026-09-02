@@ -18,7 +18,7 @@ outbound_date = "2027-07-17"
 # Round trip -- return_after_weeks is computed against outbound_date at
 # runtime, not stored as a second hardcoded date, so it never drifts
 # out of sync when outbound_date changes.
-return_after_weeks = 5
+return_after_weeks = 6
 currency = "EUR"
 adults = 2
 children = 1

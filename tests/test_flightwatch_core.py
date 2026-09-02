@@ -32,7 +32,7 @@ class TestLoadRouteConfig:
         config = core.load_route_config("check_flights")
         assert config["departure_id"] == "AMS"
         assert config["outbound_date"] == "2027-07-17"
-        assert config["return_after_weeks"] == 5
+        assert config["return_after_weeks"] == 6
         assert config["currency"] == "EUR"
         assert config["adults"] == 2
         assert config["children"] == 1

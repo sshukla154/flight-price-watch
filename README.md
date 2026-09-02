@@ -209,7 +209,7 @@ airports — no Python edit needed. Quick reference:
 | From location (departure airport) | `departure_id` | `"AMS"` |
 | To location(s) (destination airports compared) | `candidates` | add/remove `{ id = "...", label = "...", one_stop = true/false }` entries |
 | Outbound date | `outbound_date` | `"2027-07-17"` |
-| Trip length (return date) | `return_after_weeks` | `5` — return date is always computed from `outbound_date`, never stored separately, so it can't drift out of sync |
+| Trip length (return date) | `return_after_weeks` | `6` — return date is always computed from `outbound_date`, never stored separately, so it can't drift out of sync |
 | Passengers | `adults` / `children` | `2` / `1` — headcount only, SerpApi has no age field (a 7-year-old is just `children = 1`) |
 
 Edit the value(s), commit, push — the next scheduled run (or a manual
@@ -220,7 +220,7 @@ Edit the value(s), commit, push — the next scheduled run (or a manual
 departure_id = "AMS"
 departure_label = "Amsterdam"
 outbound_date = "2027-07-17"
-return_after_weeks = 5
+return_after_weeks = 6
 currency = "EUR"
 adults = 2
 children = 1
