@@ -208,8 +208,8 @@ airports — no Python edit needed. Quick reference:
 |---|---|---|
 | From location (departure airport) | `departure_id` | `"AMS"` |
 | To location(s) (destination airports compared) | `candidates` | add/remove `{ id = "...", label = "...", one_stop = true/false }` entries |
-| Outbound date | `outbound_date` | `"2027-07-17"` |
-| Trip length (return date) | `return_after_weeks` | `6` — return date is always computed from `outbound_date`, never stored separately, so it can't drift out of sync |
+| Outbound date | `outbound_date` | `"2027-07-22"` |
+| Trip length (return date) | `return_after_days` | `38` — return date is always computed from `outbound_date`, never stored separately, so it can't drift out of sync |
 | Passengers | `adults` / `children` | `2` / `1` — headcount only, SerpApi has no age field (a 7-year-old is just `children = 1`) |
 
 Edit the value(s), commit, push — the next scheduled run (or a manual
@@ -219,8 +219,8 @@ Edit the value(s), commit, push — the next scheduled run (or a manual
 [check_flights]
 departure_id = "AMS"
 departure_label = "Amsterdam"
-outbound_date = "2027-07-17"
-return_after_weeks = 6
+outbound_date = "2027-07-22"
+return_after_days = 38
 currency = "EUR"
 adults = 2
 children = 1
@@ -300,11 +300,15 @@ list itself; edit `routes.toml` and commit for that.
 
 ## Why today's run might fail (or partially fail)
 
-2027-07-17 is far enough out that airline schedules/fares may not be
-loaded into Google Flights yet for some or all candidates — typically
-published 330-360 days before departure, and that window is right
-around now for this date. The daily job will just start succeeding on
-its own once real data loads; no action needed.
+2027-07-22 (or its round-trip pairing 2027-08-29) is far enough out
+that airline schedules/fares may not be loaded into Google Flights yet
+for the outbound leg, the return leg, or both — typically published
+330-360 days before departure, and that window is right around now for
+these dates. Either leg missing means the whole round-trip pairing
+comes back empty, handled the same as any other "nothing to report"
+case (see `NoFlightsFoundYet` in `flightwatch_core.py`) — the daily job
+will just start succeeding on its own once real data loads for both
+legs; no action needed.
 
 **DXN specifically** is a second, independent reason a candidate might
 show "no data yet" regardless of date — it only started commercial

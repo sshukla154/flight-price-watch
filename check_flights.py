@@ -69,10 +69,10 @@ _CONFIG = load_route_config("check_flights")
 DEPARTURE_ID = os.environ.get("FLIGHT_DEPARTURE_ID") or _CONFIG["departure_id"]
 DEPARTURE_LABEL = os.environ.get("FLIGHT_DEPARTURE_LABEL") or _CONFIG["departure_label"]
 OUTBOUND_DATE = os.environ.get("FLIGHT_OUTBOUND_DATE") or _CONFIG["outbound_date"]
-_RETURN_AFTER_WEEKS = int(
-    os.environ.get("FLIGHT_RETURN_AFTER_WEEKS") or _CONFIG["return_after_weeks"]
+_RETURN_AFTER_DAYS = int(
+    os.environ.get("FLIGHT_RETURN_AFTER_DAYS") or _CONFIG["return_after_days"]
 )
-RETURN_DATE = (date.fromisoformat(OUTBOUND_DATE) + timedelta(weeks=_RETURN_AFTER_WEEKS)).isoformat()
+RETURN_DATE = (date.fromisoformat(OUTBOUND_DATE) + timedelta(days=_RETURN_AFTER_DAYS)).isoformat()
 CURRENCY = os.environ.get("FLIGHT_CURRENCY") or _CONFIG["currency"]
 ADULTS = int(os.environ.get("FLIGHT_ADULTS") or _CONFIG["adults"])
 CHILDREN = int(os.environ.get("FLIGHT_CHILDREN") or _CONFIG["children"])
