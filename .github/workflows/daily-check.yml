@@ -15,6 +15,14 @@ on:
         description: "Force the notification channel (whatsapp/email) instead of the automatic GITHUB_ACTIONS-based pick -- blank uses the automatic pick. Useful to test the other-channel fallback, or to re-check whether CallMeBot's GitHub Actions IP block has ever lifted."
         required: false
         default: ""
+      adults:
+        description: "Override adult passenger count -- blank uses routes.toml's own default. Useful to re-verify SerpApi's price field is the TOTAL for the party, not per-adult (compare against a run with this set to 1)."
+        required: false
+        default: ""
+      children:
+        description: "Override child passenger count -- blank uses routes.toml's own default."
+        required: false
+        default: ""
 
 jobs:
   check:
@@ -46,4 +54,6 @@ jobs:
           # must never depend on it existing.
           FLIGHT_OUTBOUND_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.outbound_date || '' }}
           FLIGHT_NOTIFY_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.notify_channel || '' }}
+          FLIGHT_ADULTS: ${{ github.event_name == 'workflow_dispatch' && inputs.adults || '' }}
+          FLIGHT_CHILDREN: ${{ github.event_name == 'workflow_dispatch' && inputs.children || '' }}
         run: python check_flights.py
