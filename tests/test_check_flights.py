@@ -277,6 +277,23 @@ class TestFormatTable:
         table = cf._format_table(["Airport", "Price"], [])
         assert table == "Airport  Price\n-------  -----"
 
+    def test_price_column_found_by_name_not_fixed_index(self) -> None:
+        """Price is no longer always column index 1 (From/To/Via can
+        precede it) -- this proves the right-alignment follows the
+        "Price" header wherever it actually lands."""
+        table = cf._format_table(
+            ["From", "To", "Via", "Price"],
+            [["AMS", "DEL", "WAW", "9"], ["AMS", "BOM", "KWI", "1000"]],
+        )
+        lines = table.split("\n")
+
+        assert lines[2] == "  ".join(
+            ["AMS".ljust(4), "DEL".ljust(2), "WAW".ljust(3), "9".rjust(5)]
+        ).rstrip()
+        assert lines[3] == "  ".join(
+            ["AMS".ljust(4), "BOM".ljust(2), "KWI".ljust(3), "1000".rjust(5)]
+        ).rstrip()
+
 
 class TestCheckOne:
     def test_price_found_in_both_categories_when_one_stop_eligible(
@@ -486,6 +503,63 @@ class TestBuildWhatsappMessage:
         # baggage line appears for BOTH categories, not just 1-STOP
         assert "Delhi (DEL): Baggage -- Checked baggage for a fee" in message
         assert "Baggage: 1 free checked bag" in message
+
+    def test_direct_table_has_from_to_columns_one_stop_table_adds_via(self) -> None:
+        direct_row = cf.CategoryRow(
+            airport="DEL",
+            label="Delhi",
+            price="480",
+            airline="KLM",
+            departure="09:15",
+            arrival="21:30",
+            total="12h15m",
+            transit=None,
+            baggage="Checked baggage for a fee",
+        )
+        one_stop_row = cf.CategoryRow(
+            airport="VNS",
+            label="Varanasi",
+            price="364",
+            airline="IndiGo",
+            departure="20:35",
+            arrival="20:00+1",
+            total="19h55m",
+            transit="8h00m",
+            baggage="1 free checked bag",
+            stop_id="DXB",
+            stop_name="Dubai",
+            leg1_duration="3h00m",
+            leg2_duration="8h45m",
+        )
+        outcomes = [
+            cf.CandidateOutcome(direct_row=direct_row, one_stop_row=None, error_line=None),
+            cf.CandidateOutcome(direct_row=None, one_stop_row=one_stop_row, error_line=None),
+        ]
+
+        message = cf._build_whatsapp_message(outcomes)
+        lines = message.split("\n")
+
+        direct_header = next(line for line in lines if line.startswith("From"))
+        assert direct_header.split() == ["From", "To", "Price", "Airline", "Dep", "Arr", "Total"]
+        direct_data_row = next(line for line in lines if line.startswith(cf.DEPARTURE_ID))
+        assert direct_data_row.split()[:2] == [cf.DEPARTURE_ID, "DEL"]
+
+        via_header = next(line for line in lines if line.startswith("From") and "Via" in line)
+        assert via_header.split() == [
+            "From",
+            "To",
+            "Via",
+            "Price",
+            "Airline",
+            "Dep",
+            "Arr",
+            "Transit",
+            "Total",
+        ]
+        via_data_row = next(
+            line for line in lines if line.startswith(cf.DEPARTURE_ID) and "VNS" in line
+        )
+        assert via_data_row.split()[:3] == [cf.DEPARTURE_ID, "VNS", "DXB"]
 
 
 class TestBuildEmailBody:

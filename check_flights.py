@@ -397,8 +397,11 @@ def _format_table(headers: list[str], rows: list[list[str]]) -> str:
     widths are computed from the actual content (header or any cell,
     whichever is longest), never hardcoded, so this stays correct
     however long an airline name or a total-duration string turns out
-    to be. Price (column 1) is right-aligned; everything else is left-
-    aligned. Caller wraps the result in a ``` fence."""
+    to be. Price is right-aligned; everything else is left-aligned --
+    found by header name rather than a fixed index, since which column
+    Price lands in varies by table (From/To/Via all precede it in the
+    1-STOP table). Caller wraps the result in a ``` fence."""
+    price_index = headers.index("Price")
     widths = [
         max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i])
         for i in range(len(headers))
@@ -406,7 +409,7 @@ def _format_table(headers: list[str], rows: list[list[str]]) -> str:
 
     def _format_row(cells: list[str]) -> str:
         parts = [
-            cell.rjust(widths[i]) if i == 1 else cell.ljust(widths[i])
+            cell.rjust(widths[i]) if i == price_index else cell.ljust(widths[i])
             for i, cell in enumerate(cells)
         ]
         return "  ".join(parts).rstrip()
@@ -531,9 +534,9 @@ def _build_sections(
     tables: list[tuple[str, str]] = []
     if direct_rows:
         table = _format_table(
-            ["Airport", "Price", "Airline", "Dep", "Arr", "Total"],
+            ["From", "To", "Price", "Airline", "Dep", "Arr", "Total"],
             [
-                [r.airport, r.price, r.airline, r.departure, r.arrival, r.total]
+                [DEPARTURE_ID, r.airport, r.price, r.airline, r.departure, r.arrival, r.total]
                 for r in direct_rows
             ],
         )
@@ -541,9 +544,19 @@ def _build_sections(
         tables.append(("DIRECT", f"{table}\n\n{detail}"))
     if one_stop_rows:
         table = _format_table(
-            ["Airport", "Price", "Airline", "Dep", "Arr", "Transit", "Total"],
+            ["From", "To", "Via", "Price", "Airline", "Dep", "Arr", "Transit", "Total"],
             [
-                [r.airport, r.price, r.airline, r.departure, r.arrival, r.transit or "", r.total]
+                [
+                    DEPARTURE_ID,
+                    r.airport,
+                    r.stop_id or "",
+                    r.price,
+                    r.airline,
+                    r.departure,
+                    r.arrival,
+                    r.transit or "",
+                    r.total,
+                ]
                 for r in one_stop_rows
             ],
         )
